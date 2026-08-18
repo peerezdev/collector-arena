@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useIdentityToken } from '@privy-io/react-auth'
 import { COLORS, FONTS, GRADIENT } from '../../theme'
+import { fmtGimmighouls, fmtGimmighoulsCompacto } from '../../gimmighouls'
 import { useIsWide } from '../../useIsWide'
 import { useEmbeddedSolanaAddress } from '../../../wallet/embedded'
 import {
@@ -11,17 +12,6 @@ import {
 
 function shortWallet(w: string): string {
   return w.length > 10 ? `${w.slice(0, 4)}…${w.slice(-4)}` : w
-}
-const fmt = (n: number) => n.toLocaleString('en-US')
-// Compact format for mobile: 1K, 100K, 1M, 100M… (sign-aware, trims trailing .0).
-function fmtCompact(n: number): string {
-  const sign = n < 0 ? '-' : ''
-  const a = Math.abs(n)
-  const trim = (x: number) => String(+x.toFixed(1))
-  if (a >= 1e9) return `${sign}${trim(a / 1e9)}B`
-  if (a >= 1e6) return `${sign}${trim(a / 1e6)}M`
-  if (a >= 1e3) return `${sign}${trim(a / 1e3)}K`
-  return `${sign}${a}`
 }
 
 const TINTS = ['linear-gradient(135deg,#ff6bb5,#d4127a)', 'linear-gradient(135deg,#4ea8ff,#6a5bff)', 'linear-gradient(135deg,#f5c542,#e8732c)', 'linear-gradient(135deg,#00ffc4,#16a87a)', 'linear-gradient(135deg,#ff6e8a,#d23a5e)']
@@ -49,7 +39,7 @@ export function LeaderboardPage() {
   const myWallet = useEmbeddedSolanaAddress()
   const { identityToken } = useIdentityToken()
   const wide = useIsWide('(min-width: 760px)')
-  const fmtN = (n: number) => (wide ? fmt(n) : fmtCompact(n))
+  const fmtN = (n: number) => (wide ? fmtGimmighouls(n) : fmtGimmighoulsCompacto(n))
 
   const [rows, setRows] = useState<LeaderboardRow[]>([])
   const [loading, setLoading] = useState(RANKING_LIVE) // nothing to load while the board is parked

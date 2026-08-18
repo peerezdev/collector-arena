@@ -63,13 +63,13 @@ def test_award_with_code_fallback_to_earned_when_no_owner(Session, unit_rate):
     assert get_referral_code(s, "NOOWNER").earned == 10  # round(50 * 0.20)
 
 
-def test_award_rounding(Session, unit_rate):
+def test_award_no_redondea_el_boost(Session, unit_rate):
     s = Session()
     create_referral_code(s, "ODD", "Odd", boost_pct=0.105, referrer_pct=0.0)
     apply_referral_code(s, "dave", "ODD")
-    credited = award_gimmighouls(s, "dave", 33_000_000)  # $33 · 33 * 1.105 = 36.465 -> 36
+    credited = award_gimmighouls(s, "dave", 33_000_000)  # $33 · 33 * 1.105 = 36.465, tal cual
     s.commit()
-    assert credited == 36
+    assert credited == pytest.approx(36.465)
 
 
 def test_award_respects_config_ratio(Session, monkeypatch):
@@ -191,13 +191,92 @@ def test_ratios_de_gimmighouls_no_se_mueven_sin_tocar_la_copia():
     """Las dos cifras están escritas A MANO en la interfaz.
 
     src/ui/screens/Help/helpContent.ts y src/ui/components/OnboardingTutorial.tsx le prometen al
-    jugador "0.5 per dollar in battles" y "0.1 in gacha". No hay endpoint que las publique, así
+    jugador "0.5 per dollar in battles" y "0.01 in gacha". No hay endpoint que las publique, así
     que si estos valores cambian y la copia no, la ayuda miente sobre lo que se gana. Este test es
     el aviso: si lo rompes, actualiza también esos dos ficheros.
     """
     from app.config import Settings
     s = Settings()
     assert s.gimmighoul_per_usdc == 0.5
-    assert s.gimmighoul_per_usdc_gacha == 0.1
+    assert s.gimmighoul_per_usdc_gacha == 0.01
     # Y el gacha renta menos que una batalla: se premia jugar contra alguien.
     assert s.gimmighoul_per_usdc_gacha < s.gimmighoul_per_usdc
+
+
+# ── Las fracciones no se pierden ─────────────────────────────────────────────
+#
+# El contador ES DECIMAL. Era entero, y con el gacha a 0.01 por dólar dejó de valer: un sobre de
+# 50 $ da medio punto, `round(0.5)` es 0, y las dos máquinas MÁS jugadas —25 y 50 $— habrían
+# dejado de pagar absolutamente nada mientras la ayuda seguía prometiendo 0.01 por dólar.
+#
+# Con decimales no hay nada que redondear, así que tampoco se paga de más: se paga lo que toca.
+
+USDC_ = 1_000_000
+
+
+def test_media_unidad_se_paga_entera_no_se_redondea(Session):
+    with Session() as s:
+        assert award_gimmighouls(s, "W", 50 * USDC_, ratio=0.01) == 0.5
+        assert s.get(User, "W").gimmighouls == 0.5
+
+
+def test_dos_sobres_de_50_suman_el_punto(Session):
+    with Session() as s:
+        award_gimmighouls(s, "W", 50 * USDC_, ratio=0.01)
+        award_gimmighouls(s, "W", 50 * USDC_, ratio=0.01)
+        assert s.get(User, "W").gimmighouls == 1
+
+
+def test_diez_sobres_de_50_pagan_los_CINCO_puntos_que_tocan(Session):
+    """Lo que sostiene la promesa: 0.01 por dólar sobre 500 $ son 5 puntos. Ni 0 ni 10."""
+    with Session() as s:
+        for _ in range(10):
+            award_gimmighouls(s, "W", 50 * USDC_, ratio=0.01)
+        assert s.get(User, "W").gimmighouls == 5
+
+
+def test_cuatro_sobres_de_25_pagan_un_punto(Session):
+    with Session() as s:
+        for _ in range(4):
+            award_gimmighouls(s, "W", 25 * USDC_, ratio=0.01)
+        assert s.get(User, "W").gimmighouls == 1
+
+
+def test_nunca_se_paga_de_mas(Session):
+    """Un sobre de 150 $ a 0.01 son 1.5 puntos. Redondeando al más cercano se regalaría medio."""
+    with Session() as s:
+        assert award_gimmighouls(s, "W", 150 * USDC_, ratio=0.01) == 1.5
+        assert s.get(User, "W").gimmighouls == 1.5
+
+
+def test_las_batallas_siguen_pagando_igual(Session):
+    """Donde el premio ya era entero no cambia nada: 10 $ a 0.5 son 5 puntos."""
+    with Session() as s:
+        assert award_gimmighouls(s, "W", 10 * USDC_) == 5
+        assert s.get(User, "W").gimmighouls == 5
+
+
+def test_el_corte_del_referidor_tambien_lleva_decimales(Session):
+    """Su corte es un porcentaje de un premio ya pequeño, así que es donde más fracciones salen."""
+    with Session() as s:
+        create_referral_code(s, code="REF", name="R", boost_pct=0.0, referrer_pct=0.1,
+                             owner_wallet="OWNER")
+        apply_referral_code(s, "W", "REF")
+        award_gimmighouls(s, "W", 50 * USDC_, ratio=0.01)   # 0.1 de medio punto = 0.05
+        assert s.get(User, "OWNER").gimmighouls == 0.05
+
+
+def test_el_decimal_sobrevive_al_disco(Session):
+    """Los de arriba miran el objeto en memoria; este obliga a pasar por la base de datos.
+
+    Lo que NO prueba, por si alguien lo lee al revés: que la columna tenga que declararse FLOAT.
+    SQLite tipa por afinidad y guarda 0.5 tal cual aunque la columna diga INTEGER (comprobado
+    mutando el modelo: este test pasa igual). El FLOAT del modelo es lo que dice la intención, y
+    lo que haría falta si algún día esto no fuera SQLite. Lo que sí sujeta es que nada en el
+    camino de ida y vuelta convierta el medio punto a entero.
+    """
+    with Session() as s:
+        award_gimmighouls(s, "W", 50 * USDC_, ratio=0.01)
+        s.commit()
+    with Session() as s:
+        assert s.get(User, "W").gimmighouls == 0.5

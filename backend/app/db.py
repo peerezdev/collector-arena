@@ -19,7 +19,12 @@ def make_session_factory(engine):
 # new TABLES but never adds COLUMNS to pre-existing ones, so we guard each new column with
 # an ADD COLUMN that runs only when the column is missing. Extend this list when adding columns.
 _ENSURE_COLUMNS = [
-    ("users", "gimmighouls", "INTEGER NOT NULL DEFAULT 0"),
+    # DECIMAL, no entero: con el gacha a 0.01 por dólar un sobre de 50 $ vale medio punto, y
+    # redondeando se quedaba en cero justo en las dos máquinas más jugadas. Las bases de datos que ya
+    # existen NO necesitan migración: SQLite tiene tipado por afinidad y una columna declarada
+    # INTEGER guarda 0.5 tal cual (comprobado: `typeof` devuelve `real`), porque solo convierte a
+    # entero cuando no se pierde nada. El FLOAT es para las que se creen a partir de ahora.
+    ("users", "gimmighouls", "FLOAT NOT NULL DEFAULT 0"),
     ("users", "referred_by", "VARCHAR"),
     ("users", "withdraw_address", "VARCHAR"),
     ("users", "emote_slots", "VARCHAR"),

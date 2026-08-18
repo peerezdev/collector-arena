@@ -35,7 +35,7 @@ describe('OnboardingTutorial', () => {
     render(<OnboardingTutorial onClose={vi.fn()} />)
     for (let i = 0; i < 4; i++) fireEvent.click(screen.getByText('Next'))
     expect(screen.getByText(/0\.5 per dollar in battles/)).toBeTruthy()
-    expect(screen.getByText(/0\.1 in gacha/)).toBeTruthy()
+    expect(screen.getByText(/0\.01 in gacha/)).toBeTruthy()
   })
 
   it('SKIP TOUR closes the tour immediately', () => {

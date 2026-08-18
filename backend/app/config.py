@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     # sobres en solitario. Si se cambia cualquiera de los dos, hay que tocar también lo que se le
     # promete al jugador en src/ui/screens/Help/helpContent.ts y OnboardingTutorial.tsx, que
     # llevan las cifras escritas a mano.
-    gimmighoul_per_usdc_gacha: float = 0.1  # env: GIMMIGHOUL_PER_USDC_GACHA
+    gimmighoul_per_usdc_gacha: float = 0.01  # env: GIMMIGHOUL_PER_USDC_GACHA
     # Platform fee on battles: pct per player over the buyback value of the winner's loot,
     # capped at battle_fee_pct_cap total. Collected in USDC from the winner's wallet after
     # settle. fee_wallet_address empty → falls back to privy_operator_address; both empty →

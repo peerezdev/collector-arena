@@ -15,7 +15,9 @@ class User(Base):
     alias: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     elo: Mapped[int] = mapped_column(Integer, default=1200)
     games_played: Mapped[int] = mapped_column(Integer, default=0)
-    gimmighouls: Mapped[int] = mapped_column(Integer, default=0)
+    #: Decimal a propósito: el gacha paga 0.01 por dólar, así que los premios son fracciones de punto
+    #: y un contador entero los redondearía a cero. Ver `award_gimmighouls`.
+    gimmighouls: Mapped[float] = mapped_column(Float, default=0.0)
     referred_by: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # ReferralCode.code
     withdraw_address: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # USDC payout destination
     emote_slots: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # JSON list of up to 3 quick-access emote codes
@@ -45,7 +47,7 @@ class ReferralCode(Base):
     # paga lo mismo.
     rake_share_pct: Mapped[float] = mapped_column(Float, default=0.25)
     owner_wallet: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # User to credit the cut to
-    earned: Mapped[int] = mapped_column(Integer, default=0)  # fallback tally when no owner_wallet
+    earned: Mapped[float] = mapped_column(Float, default=0.0)  # fallback tally when no owner_wallet
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
