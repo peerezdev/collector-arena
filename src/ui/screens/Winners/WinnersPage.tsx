@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { COLORS, FONTS, RARITY, formatUsd } from '../../theme'
 import { useMachineList } from '../../useMachines'
 import { useAliases } from '../../useAliases'
@@ -102,7 +103,19 @@ function GapsPorRareza({ machine }: { machine: string }) {
 
 export function WinnersPage() {
   const { machines } = useMachineList()
-  const [maquina, setMaquina] = useState<string>('')
+  // La máquina vive en la URL, no en estado local. Así el tracker puede enlazar aquí una máquina
+  // concreta ("RECENT PULLS" de cada tarjeta), y de paso el filtro se puede compartir y sobrevive
+  // a recargar la página. El resto de filtros no: son de esta visita.
+  const [params, setParams] = useSearchParams()
+  const maquina = params.get('machine') ?? ''
+  const setMaquina = (code: string) => {
+    setParams((antes) => {
+      const p = new URLSearchParams(antes)
+      if (code) p.set('machine', code)
+      else p.delete('machine')     // sin máquina no se deja `?machine=` colgando en la barra
+      return p
+    }, { replace: true })
+  }
   const [rareza, setRareza] = useState<(typeof RAREZAS)[number]>('All')
   const [cantidad, setCantidad] = useState<(typeof CANTIDADES)[number]>(10)
   const [filas, setFilas] = useState<GachaWinner[] | null>(null)

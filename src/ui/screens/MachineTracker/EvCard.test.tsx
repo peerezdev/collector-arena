@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { render, screen, cleanup } from '@testing-library/react'
+import { render as renderRaw, screen, cleanup } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
+
+// La tarjeta enlaza a Winners con su máquina filtrada, así que necesita router para montarse.
+const render = (ui: React.ReactElement) => renderRaw(<MemoryRouter>{ui}</MemoryRouter>)
 
 import { EvCard } from './EvCard'
 import type { EvRow } from '../../../onchain/gachaClient'

@@ -1,3 +1,5 @@
+import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { COLORS, FONTS, formatUsd } from '../../theme'
 import type { EvRow } from '../../../onchain/gachaClient'
 import { RATIO_MAX, RATIO_MIN, anguloAguja, estadoDe, etiqueta, ratioDesdeEdge } from './evDial'
@@ -17,7 +19,13 @@ import { ACENTO, acentoDe, afirma, colorRareza, fondoFila } from './evAcento'
  * muestra corta— el número se pinta en gris aunque sea malísimo. Un rojo fuerte sobre seis horas de
  * datos afirma algo que los datos no dicen.
  */
-export function EvCard({ fila, nota }: { fila: EvRow; nota?: string }) {
+export function EvCard({ fila, nota, onArrastrar }: {
+  fila: EvRow
+  nota?: string
+  /** Se avisa al empezar a arrastrar la tarjeta. Sin esto la tarjeta no se puede recolocar. */
+  onArrastrar?: () => void
+}) {
+  const [arrastrable, setArrastrable] = useState(false)
   const estado = estadoDe(fila.realized_verdict)
   const ratio = ratioDesdeEdge(fila.realized_edge_pct)
   const lab = etiqueta(estado, fila)
@@ -38,7 +46,13 @@ export function EvCard({ fila, nota }: { fila: EvRow; nota?: string }) {
       border: `1px solid ${confirmado ? `${acento}59` : COLORS.border}`,
       borderRadius: 16, boxShadow: '0 8px 24px #00000055',
       display: 'flex', flexDirection: 'column', overflow: 'hidden',
-    }}>
+    }}
+      // Arrastrable SOLO mientras el cursor está sobre el tirador. Si el artículo fuera
+      // `draggable` siempre, seleccionar un número de la tarjeta arrancaría un arrastre.
+      draggable={arrastrable}
+      onDragStart={onArrastrar}
+      onDragEnd={() => setArrastrable(false)}
+    >
       <header style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
         padding: '13px 15px', borderBottom: '1px solid #ffffff12',
@@ -55,9 +69,31 @@ export function EvCard({ fila, nota }: { fila: EvRow; nota?: string }) {
             whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
           }}>{fila.name}</span>
         </span>
-        <span style={{ fontFamily: FONTS.mono, fontSize: 10, color: COLORS.muted, whiteSpace: 'nowrap', flex: 'none' }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 'none' }}>
+        <span style={{ fontFamily: FONTS.mono, fontSize: 10, color: COLORS.muted, whiteSpace: 'nowrap' }}>
           ${fila.pack_price}
           {fila.buyback_pct ? ` · bb ${Math.round(fila.buyback_pct * 100)}%` : ''}
+        </span>
+        {/* El tirador. Solo aparece si la pantalla sabe reordenar, así que la tarjeta sigue
+            valiendo en sitios donde no hay orden que tocar.
+
+            `onMouseDown` enciende `draggable` y `onDragEnd` lo apaga: es lo que hace que el
+            arrastre salga de AQUÍ y no de cualquier punto de la tarjeta. El navegador no permite
+            marcar arrastrable solo a un hijo. */}
+        {onArrastrar && (
+          <span
+            aria-hidden
+            title="Drag to reorder"
+            onMouseDown={() => setArrastrable(true)}
+            onMouseUp={() => setArrastrable(false)}
+            style={{
+              cursor: 'grab', color: '#5d6774', fontSize: 13, lineHeight: 1,
+              padding: '2px 1px', userSelect: 'none',
+            }}
+          >
+            ⠿
+          </span>
+        )}
         </span>
       </header>
 
@@ -206,6 +242,20 @@ export function EvCard({ fila, nota }: { fila: EvRow; nota?: string }) {
             {lab.detalle}
           </div>
         )}
+        {/* De la conclusión a las tiradas que la producen. La tarjeta dice el resumen de 48 horas;
+            esto es lo que hay detrás, y es la única forma de comprobarlo. Lleva a Winners con la
+            máquina ya filtrada, que además dejó de estar en el menú lateral. */}
+        <Link
+          to={`/winners?machine=${encodeURIComponent(fila.machine)}`}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 5, marginTop: 11,
+            fontFamily: FONTS.mono, fontSize: 9.5, letterSpacing: '.06em', textDecoration: 'none',
+            color: COLORS.muted, border: `1px solid ${COLORS.border}`, borderRadius: 7,
+            padding: '4px 9px',
+          }}
+        >
+          RECENT PULLS →
+        </Link>
       </div>
     </article>
   )

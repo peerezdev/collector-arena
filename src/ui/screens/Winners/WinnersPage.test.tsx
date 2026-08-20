@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import type { GachaWinner } from '../../../onchain/gachaClient'
 
 const mocks = vi.hoisted(() => ({
@@ -40,14 +41,14 @@ beforeEach(() => {
 
 describe('WinnersPage', () => {
   it('pide las últimas 10 de todas las máquinas al entrar', async () => {
-    render(<WinnersPage />)
+    render(<MemoryRouter><WinnersPage /></MemoryRouter>)
     await waitFor(() => expect(mocks.fetchWinners).toHaveBeenCalled())
     expect(mocks.fetchWinners).toHaveBeenCalledWith({ machine: undefined, rarity: undefined, count: 10 })
   })
 
   it('enseña la carta Y quién la sacó', async () => {
     mocks.fetchWinners.mockResolvedValue([ganador({ wallet: 'ALICE', name: 'Pikachu PSA 9' })])
-    render(<WinnersPage />)
+    render(<MemoryRouter><WinnersPage /></MemoryRouter>)
     expect(await screen.findByText('Pikachu PSA 9')).toBeTruthy()
     // Si el wallet es de un jugador nuestro se enseña su nombre, no la dirección.
     expect(screen.getByText(/alicia/)).toBeTruthy()
@@ -55,12 +56,12 @@ describe('WinnersPage', () => {
 
   it('cae a la dirección abreviada cuando no conocemos al jugador', async () => {
     mocks.fetchWinners.mockResolvedValue([ganador({ wallet: 'ABCD000000000000000000000000000000000WXYZ' })])
-    render(<WinnersPage />)
+    render(<MemoryRouter><WinnersPage /></MemoryRouter>)
     expect(await screen.findByText(/ABCD…WXYZ/)).toBeTruthy()
   })
 
   it('el filtro de cantidad llega a la petición', async () => {
-    render(<WinnersPage />)
+    render(<MemoryRouter><WinnersPage /></MemoryRouter>)
     await waitFor(() => expect(mocks.fetchWinners).toHaveBeenCalled())
     fireEvent.click(screen.getByRole('button', { name: 'Last 200' }))
     await waitFor(() =>
@@ -68,13 +69,13 @@ describe('WinnersPage', () => {
   })
 
   it('no se ofrecen 500: la API de CC corta en 200', () => {
-    render(<WinnersPage />)
+    render(<MemoryRouter><WinnersPage /></MemoryRouter>)
     expect(screen.queryByRole('button', { name: /Last 500/ })).toBeNull()
     expect(screen.getByRole('button', { name: 'Last 200' })).toBeTruthy()
   })
 
   it('el filtro de rareza llega a la petición', async () => {
-    render(<WinnersPage />)
+    render(<MemoryRouter><WinnersPage /></MemoryRouter>)
     await waitFor(() => expect(mocks.fetchWinners).toHaveBeenCalled())
     fireEvent.click(screen.getByRole('button', { name: 'Epic' }))
     await waitFor(() =>
@@ -82,25 +83,46 @@ describe('WinnersPage', () => {
   })
 
   it('el filtro de máquina llega a la petición', async () => {
-    render(<WinnersPage />)
+    render(<MemoryRouter><WinnersPage /></MemoryRouter>)
     await waitFor(() => expect(mocks.fetchWinners).toHaveBeenCalled())
     fireEvent.change(screen.getByLabelText('Machine'), { target: { value: 'pokemon_50' } })
     await waitFor(() =>
       expect(mocks.fetchWinners).toHaveBeenLastCalledWith(expect.objectContaining({ machine: 'pokemon_50' })))
   })
 
+  it('la máquina se puede traer en la URL, que es como enlaza el tracker', async () => {
+    // Cada tarjeta del Machine Tracker enlaza a /winners?machine=<code>. Si la página ignorara el
+    // parámetro, el botón "RECENT PULLS" traería aquí las tiradas de TODAS las máquinas y nadie
+    // notaría que el filtro no se aplicó.
+    render(
+      <MemoryRouter initialEntries={['/winners?machine=pokemon_50']}><WinnersPage /></MemoryRouter>,
+    )
+    await waitFor(() =>
+      expect(mocks.fetchWinners).toHaveBeenLastCalledWith(expect.objectContaining({ machine: 'pokemon_50' })))
+    // Y el desplegable lo refleja, para que se vea POR QUÉ la lista está filtrada.
+    expect((screen.getByLabelText('Machine') as HTMLSelectElement).value).toBe('pokemon_50')
+  })
+
+  it('elegir máquina a mano la lleva a la URL, para poder compartir el filtro', async () => {
+    render(<MemoryRouter><WinnersPage /></MemoryRouter>)
+    await waitFor(() => expect(mocks.fetchWinners).toHaveBeenCalled())
+    fireEvent.change(screen.getByLabelText('Machine'), { target: { value: 'pokemon_50' } })
+    await waitFor(() =>
+      expect((screen.getByLabelText('Machine') as HTMLSelectElement).value).toBe('pokemon_50'))
+  })
+
   it('avisa cuando una rareza no-Epic devuelve menos de lo pedido', async () => {
     // CC solo filtra Epic upstream; el resto se recorta después, así que salen menos. Decirlo
     // evita que parezca que faltan datos.
     mocks.fetchWinners.mockResolvedValue([ganador({ rarity: 'Rare' })])
-    render(<WinnersPage />)
+    render(<MemoryRouter><WinnersPage /></MemoryRouter>)
     fireEvent.click(screen.getByRole('button', { name: 'Rare' }))
     expect(await screen.findByText(/only filters Epic upstream/i)).toBeTruthy()
   })
 
   it('con Epic no avisa: ahí el filtro sí es de CC', async () => {
     mocks.fetchWinners.mockResolvedValue([ganador({ rarity: 'Epic' })])
-    render(<WinnersPage />)
+    render(<MemoryRouter><WinnersPage /></MemoryRouter>)
     fireEvent.click(screen.getByRole('button', { name: 'Epic' }))
     await waitFor(() => expect(mocks.fetchWinners).toHaveBeenLastCalledWith(expect.objectContaining({ rarity: 'Epic' })))
     expect(screen.queryByText(/only filters Epic upstream/i)).toBeNull()
@@ -108,7 +130,7 @@ describe('WinnersPage', () => {
 
   it('si la petición falla lo dice y no se rompe', async () => {
     mocks.fetchWinners.mockRejectedValue(new Error('boom'))
-    render(<WinnersPage />)
+    render(<MemoryRouter><WinnersPage /></MemoryRouter>)
     expect(await screen.findByText(/couldn’t load winners/i)).toBeTruthy()
   })
 })
@@ -121,14 +143,14 @@ describe('WinnersPage · packs sin salir por rareza', () => {
   }
 
   it('no aparece con "All machines": mezclando máquinas el hueco no significa nada', async () => {
-    render(<WinnersPage />)
+    render(<MemoryRouter><WinnersPage /></MemoryRouter>)
     await waitFor(() => expect(mocks.fetchWinners).toHaveBeenCalled())
     expect(screen.queryByText(/PACKS SINCE LAST/i)).toBeNull()
     expect(mocks.fetchGaps).not.toHaveBeenCalled()
   })
 
   it('aparece al elegir una máquina, con el hueco de cada rareza', async () => {
-    render(<WinnersPage />)
+    render(<MemoryRouter><WinnersPage /></MemoryRouter>)
     await elegirMaquina()
     expect(await screen.findByText(/PACKS SINCE LAST/i)).toBeTruthy()
     const tira = screen.getByText(/PACKS SINCE LAST/i).parentElement as HTMLElement
@@ -138,14 +160,14 @@ describe('WinnersPage · packs sin salir por rareza', () => {
 
   it('una rareza que no salió en la muestra se marca con "+" y no con el tamaño', async () => {
     // Sería dar por medido algo que solo se sabe que es mayor que la muestra.
-    render(<WinnersPage />)
+    render(<MemoryRouter><WinnersPage /></MemoryRouter>)
     await elegirMaquina()
     const tira = (await screen.findByText(/PACKS SINCE LAST/i)).parentElement as HTMLElement
     expect(tira.textContent).toContain('Epic200+')
   })
 
   it('vuelve a ocultarse si se quita el filtro de máquina', async () => {
-    render(<WinnersPage />)
+    render(<MemoryRouter><WinnersPage /></MemoryRouter>)
     await elegirMaquina()
     await screen.findByText(/PACKS SINCE LAST/i)
     fireEvent.change(screen.getByLabelText('Machine'), { target: { value: '' } })
@@ -154,7 +176,7 @@ describe('WinnersPage · packs sin salir por rareza', () => {
 
   it('si falla, la pantalla sigue funcionando: es un extra', async () => {
     mocks.fetchGaps.mockRejectedValue(new Error('boom'))
-    render(<WinnersPage />)
+    render(<MemoryRouter><WinnersPage /></MemoryRouter>)
     await elegirMaquina()
     expect(screen.queryByText(/PACKS SINCE LAST/i)).toBeNull()
     expect(await screen.findByText('Charizard PSA 10')).toBeTruthy()

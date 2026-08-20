@@ -5,6 +5,7 @@ import { fetchEvLive, fetchEvRows, fetchTrackerAccess, type EvRow, type TrackerA
   from '../../../onchain/gachaClient'
 import { EvCard } from './EvCard'
 import { alternar, guardarOcultas, leerOcultas, visibles } from './hiddenMachines'
+import { guardarOrden, leerOrden, materializar, mostrarAlFinal, mover, ordenar } from './ordenTracker'
 import { enModo, guardarModo, leerModo, type Modo } from './evModo'
 import { LENTO_MS, RAPIDO_MS, aplicarVivo } from './evVivo'
 import { TrackerGate } from './TrackerGate'
@@ -84,6 +85,10 @@ function PanelEv() {
   // Se lee una vez al montar: la preferencia no cambia sola, y releerla en cada render obligaría a
   // tocar localStorage constantemente.
   const [ocultas, setOcultas] = useState<Set<string>>(() => leerOcultas())
+  const [orden, setOrden] = useState<string[]>(() => leerOrden())
+  // Qué tarjeta se está arrastrando. En un ref y no en estado: cambia en cada `dragover` y volver
+  // a pintar la rejilla entera a esa frecuencia hace que el arrastre se sienta pegajoso.
+  const arrastrando = useRef<string | null>(null)
   const [eligiendo, setEligiendo] = useState(false)
   const [modo, setModo] = useState<Modo>(() => leerModo())
   // Los sondeos se montan una sola vez y no pueden leer `filas` de su cierre, que se quedaría
@@ -133,6 +138,31 @@ function PanelEv() {
     guardarOcultas(siguiente)
   }
 
+  /** Marcar o desmarcar UNA máquina en el selector. Al marcarla, entra la última de la rejilla. */
+  function alternarUna(code: string) {
+    const seOculta = !ocultas.has(code)
+    cambiar(alternar(ocultas, code))
+    // Al ocultar no se toca el orden: el código se queda sin efecto porque `ordenar` recibe las
+    // filas ya filtradas. Se comprobó mutando el código que limpiarlo no cambia nada.
+    if (!seOculta) guardarYOrdenar(mostrarAlFinal(mostradas, orden, code))
+  }
+
+  function guardarYOrdenar(siguiente: string[]) {
+    setOrden(siguiente)
+    guardarOrden(siguiente)
+  }
+
+  /** Soltar la tarjeta que se arrastra sobre `destino`. */
+  function soltarSobre(destino: string) {
+    const code = arrastrando.current
+    arrastrando.current = null
+    if (!code || code === destino) return
+    // El primer arrastre congela lo que hay en pantalla: una tarjeta que nunca se tocó no tiene
+    // posición, así que sin esto no habría nada que mover.
+    const base = materializar(mostradas, orden)
+    guardarYOrdenar(mover(base, base.indexOf(code), base.indexOf(destino)))
+  }
+
   // Estos tres casos devolvían `null` cuando esto era un PANEL dentro de la página de Winners: si
   // fallaba, el feed de ganadores seguía debajo y no se notaba. Ahora es la pantalla entera, así
   // que un `null` dejaría al jugador mirando un título y nada más, sin saber si está roto, si está
@@ -155,7 +185,7 @@ function PanelEv() {
 
   // La conversión es una vista, no otra medición: el backend mide el valor de la carta y aquí se
   // le aplica la recompra si el usuario quiere ver lo que recuperaría vendiendo.
-  const mostradas = visibles(filas, ocultas).map((f) => enModo(f, modo))
+  const mostradas = ordenar(visibles(filas, ocultas), orden).map((f) => enModo(f, modo))
   const rancio = estaRancio(sello, ahoraSeg)
 
   return (
@@ -215,6 +245,10 @@ function PanelEv() {
           <div style={{ display: 'flex', gap: 8 }}>
             <button type="button" onClick={() => cambiar(new Set())} style={enlaceMini}>Show all</button>
             <button type="button" onClick={() => cambiar(new Set(filas.map((f) => f.machine)))} style={enlaceMini}>Hide all</button>
+            {/* Sin esto, deshacer un orden que no gusta obliga a arrastrarlo todo de vuelta. */}
+            {orden.length > 0 && (
+              <button type="button" onClick={() => guardarYOrdenar([])} style={enlaceMini}>Reset order</button>
+            )}
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(170px,1fr))', gap: 4 }}>
             {filas.map((f) => {
@@ -228,7 +262,7 @@ function PanelEv() {
                   <input
                     type="checkbox"
                     checked={vista}
-                    onChange={() => cambiar(alternar(ocultas, f.machine))}
+                    onChange={() => alternarUna(f.machine)}
                     style={{ accentColor: COLORS.green, cursor: 'pointer' }}
                   />
                   <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -251,8 +285,17 @@ function PanelEv() {
           display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(290px,1fr))', gap: 12,
         }}>
           {mostradas.map((f) => (
-            <EvCard key={f.machine} fila={f}
-              nota={modo === 'cashout' && f.buyback_pct ? 'AT BUYBACK' : 'AT CARD VALUE'} />
+            <div
+              key={f.machine}
+              onDragOver={(e) => { if (arrastrando.current) e.preventDefault() }}
+              onDrop={(e) => { e.preventDefault(); soltarSobre(f.machine) }}
+            >
+              <EvCard
+                fila={f}
+                nota={modo === 'cashout' && f.buyback_pct ? 'AT BUYBACK' : 'AT CARD VALUE'}
+                onArrastrar={() => { arrastrando.current = f.machine }}
+              />
+            </div>
           ))}
         </div>
       )}

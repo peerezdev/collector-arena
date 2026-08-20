@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, act } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 
 const mocks = vi.hoisted(() => ({
   fetchWinners: vi.fn().mockResolvedValue([]),
@@ -65,7 +66,7 @@ describe('PanelEv · los dos carriles del refresco', () => {
   it('lo barato se pide seis veces por cada vez que lo caro', async () => {
     // Es la razón de separarlos: el bootstrap son ~9 s de CPU las 48 máquinas y no se mueve; las
     // rachas cuestan ~370 ms y cambian con cada tirada.
-    render(<MachineTrackerPage />)
+    render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
     await avanzar(0)
     expect(mocks.fetchEv).toHaveBeenCalledTimes(1)
     await avanzar(60_000)
@@ -74,7 +75,7 @@ describe('PanelEv · los dos carriles del refresco', () => {
   })
 
   it('la racha nueva llega a la pantalla sin esperar al carril lento', async () => {
-    render(<MachineTrackerPage />)
+    render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
     await avanzar(0)
     expect(screen.getByText('80')).toBeTruthy()
     mocks.fetchEvLive.mockResolvedValue({
@@ -87,7 +88,7 @@ describe('PanelEv · los dos carriles del refresco', () => {
 
   it('en segundo plano no se pide nada', async () => {
     // Una pestaña olvidada estaría sondeando toda la noche para que no la mire nadie.
-    render(<MachineTrackerPage />)
+    render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
     await avanzar(0)
     expect(mocks.fetchEv).toHaveBeenCalledTimes(1)
     ocultarPestaña(true)
@@ -98,7 +99,7 @@ describe('PanelEv · los dos carriles del refresco', () => {
 
   it('al volver a la pestaña se refresca ya, sin esperar al siguiente tic', async () => {
     // Si no, se vería hasta un minuto de datos viejos justo cuando alguien acaba de mirar.
-    render(<MachineTrackerPage />)
+    render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
     await avanzar(0)
     expect(mocks.fetchEv).toHaveBeenCalledTimes(1)
     ocultarPestaña(true)
@@ -111,7 +112,7 @@ describe('PanelEv · los dos carriles del refresco', () => {
 
   it('si falla el carril rápido, la tarjeta sigue con lo que tenía', async () => {
     // Es un extra: no puede tumbar lo que sí se ha medido.
-    render(<MachineTrackerPage />)
+    render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
     await avanzar(0)
     expect(screen.getByText('80')).toBeTruthy()
     mocks.fetchEvLive.mockRejectedValue(new Error('sin red'))
@@ -122,11 +123,43 @@ describe('PanelEv · los dos carriles del refresco', () => {
   it('si falla un sondeo del carril lento, no se borra la pantalla', async () => {
     // Lo de antes sigue siendo cierto; vaciarla por un fallo de red pasajero es peor que
     // enseñarla un minuto más vieja.
-    render(<MachineTrackerPage />)
+    render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
     await avanzar(0)
     expect(screen.getByText('Elite Pokémon')).toBeTruthy()
     mocks.fetchEv.mockRejectedValue(new Error('sin red'))
     await avanzar(60_000)
     expect(screen.getByText('Elite Pokémon')).toBeTruthy()
+  })
+})
+
+describe('PanelEv · el orden propio y el refresco', () => {
+  const otra = { ...fila, machine: 'anime_75', name: 'Anime Pop', realized_edge_pct: -6 }
+  const enPantalla = () =>
+    screen.getAllByRole('article').map((a) => a.querySelector('span:nth-of-type(2)')?.textContent)
+
+  it('el orden del usuario SOBREVIVE al refresco, aunque cambie el edge', async () => {
+    // El servidor ordena por edge, así que sin orden propio la rejilla se recoloca sola cada 10 s
+    // y las tarjetas bailan mientras las estás leyendo. Con orden propio, se queda quieta.
+    localStorage.setItem('ba.evTracker.orden', '["anime_75","pokemon_50"]')
+    mocks.fetchEv.mockResolvedValue({ rows: [fila, otra], updated_at: 0 })
+    render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
+    await avanzar(0)
+    expect(enPantalla()).toEqual(['Anime Pop', 'Elite Pokémon'])
+
+    // El servidor cambia de opinión y las manda al revés.
+    mocks.fetchEv.mockResolvedValue({ rows: [otra, fila], updated_at: 0 })
+    await avanzar(60_000)
+    expect(enPantalla()).toEqual(['Anime Pop', 'Elite Pokémon'])
+  })
+
+  it('sin orden propio se sigue respetando al servidor', async () => {
+    mocks.fetchEv.mockResolvedValue({ rows: [fila, otra], updated_at: 0 })
+    render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
+    await avanzar(0)
+    expect(enPantalla()).toEqual(['Elite Pokémon', 'Anime Pop'])
+
+    mocks.fetchEv.mockResolvedValue({ rows: [otra, fila], updated_at: 0 })
+    await avanzar(60_000)
+    expect(enPantalla()).toEqual(['Anime Pop', 'Elite Pokémon'])
   })
 })
