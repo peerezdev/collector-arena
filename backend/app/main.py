@@ -955,8 +955,24 @@ def create_app(session_factory, chain: ChainSource,
         try:
             maquinas = await svc.machines()
         except GachaDisabled:
+            # El kill-switch es una decisión NUESTRA, no una caída de CC. Si aquí se sirviera el
+            # respaldo, apagar el gacha a mano no apagaría el tracker.
             raise HTTPException(503, "gacha_disabled")
         except GachaUpstreamError as e:
+            # CC no contesta. Las mediciones son NUESTRAS y están en nuestra base de datos: lo
+            # único que nos falta de ellos es la lista de máquinas con su precio y su recompra.
+            # Devolver un 502 aquí tiraba datos que teníamos delante y dejaba la pantalla entera
+            # en "Couldn't load the tracker", protegida solo por una caché de sesenta segundos.
+            #
+            # Se sirve lo último bueno CON SU HORA, sin fingir que se acaba de medir: la pantalla
+            # compara ese sello con el reloj y lo marca STALE a los cinco minutos.
+            if _ev_cache["filas"]:
+                logger.warning("gacha/ev: CC no responde (%s); se sirve la medición de hace %.0f s",
+                               e, ahora - _ev_cache["t"])
+                return {"rows": _ev_cache["filas"], "updated_at": int(_ev_cache["t"]),
+                        "stale": True}
+            # Sin nada medido no hay respaldo, y una lista vacía se leería como "esta máquina no
+            # tiene datos" en vez de "no se ha podido preguntar".
             raise HTTPException(502, str(e) or "gacha upstream unavailable")
         filas = []
         with session_factory() as s:
