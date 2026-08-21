@@ -9,7 +9,9 @@ Scope: regular SPL Token NFTs (graded cards).
 Compressed NFTs (cNFT / Bubblegum + DAS) are out of scope and need a different path.
 """
 
+import asyncio
 import base64
+import httpx
 from solders.pubkey import Pubkey
 from solders.hash import Hash
 from solders.instruction import Instruction, AccountMeta
@@ -244,3 +246,43 @@ def build_token_multi_transfer(
         ]))
     message = Message.new_with_blockhash(ixs, payer_pk, blockhash)
     return base64.b64encode(bytes(Transaction.new_unsigned(message))).decode()
+
+
+async def confirmar_firma(rpc_url: str, firma: str, *, intentos: int = 10,
+                          espera_s: float = 1.5) -> bool:
+    """Si esa transacción llegó a la cadena y salió BIEN.
+
+    Existe porque `submit_signed_tx` solo envía: devuelve la firma sin esperar nada. Dar por
+    cobrado un envío es regalar el pase cada vez que una transacción se cae después de salir.
+
+    Dos cosas que parecen detalles y no lo son:
+
+      · Una transacción CONFIRMADA CON ERROR no cuenta. La cadena la aceptó y la ejecutó mal, así
+        que el dinero no se movió. Mirar solo `confirmationStatus` daría por bueno un cobro que
+        no ocurrió.
+      · `processed` no basta: puede revertirse. Solo valen `confirmed` y `finalized`.
+
+    Un fallo de red se trata como "todavía no", nunca como confirmada. Ante la duda, no se activa
+    el pase: el jugador reintenta, que es recuperable, en vez de que nosotros regalemos acceso.
+    """
+    for intento in range(intentos):
+        if intento:
+            await asyncio.sleep(espera_s)
+        try:
+            async with httpx.AsyncClient() as c:
+                r = await c.post(rpc_url, json={"jsonrpc": "2.0", "id": 1,
+                                                "method": "getSignatureStatuses",
+                                                "params": [[firma], {"searchTransactionHistory": True}]},
+                                 timeout=20)
+                r.raise_for_status()
+                d = r.json()
+        except httpx.HTTPError:
+            continue
+        valor = ((d.get("result") or {}).get("value") or [None])[0]
+        if not valor:
+            continue
+        if valor.get("err"):
+            return False            # se ejecutó y falló: el dinero NO se movió
+        if valor.get("confirmationStatus") in ("confirmed", "finalized"):
+            return True
+    return False
