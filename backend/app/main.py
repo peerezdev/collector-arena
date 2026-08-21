@@ -947,6 +947,39 @@ def create_app(session_factory, chain: ChainSource,
         except GachaUpstreamError as e:
             raise HTTPException(502, str(e) or "gacha upstream unavailable")
 
+    def _wallet_opcional(authorization: Optional[str]) -> Optional[str]:
+        """La wallet del token de Privy, o `None` si no hay sesión.
+
+        Sin sesión no es un error: hay pantallas (`/gacha/tracker-access`, y ahora el propio
+        tracker) que tienen que poder distinguir "no ha entrado" de "se ha roto algo", y para eso
+        necesitan seguir respondiendo sin exigir el token. Un token caducado se trata igual que
+        no tener ninguno, por lo mismo.
+        """
+        if authorization and authorization.startswith("Bearer ") and privy is not None:
+            try:
+                return privy.embedded_solana_wallet(authorization[len("Bearer "):])
+            except PrivyAuthError:
+                return None
+        return None
+
+    def _exigir_tracker(authorization: Optional[str], s: Session) -> None:
+        """403 si quien pregunta no puede ver el tracker.
+
+        Antes esto era público, y el comentario de entonces decía que cerrarlo "daría una falsa
+        sensación de exclusividad a cambio de romper los enlaces que se comparten". Eso valía
+        mientras el tracker era gratis. Desde que se cobra por él, dejarlo abierto sería cobrar
+        por algo que un `curl` regala.
+
+        Y lo de los enlaces resultó no ser cierto: el único consumidor de `/gacha/ev` es la propia
+        pantalla, que ya no lo llama con la puerta puesta. Compartir `/machine-tracker` con
+        alguien sin acceso YA le enseñaba la puerta.
+        """
+        wallet = _wallet_opcional(authorization)
+        pase = tracker_pass.pase_vigente(s, wallet) if wallet else None
+        if not tracker_access.acceso(s, wallet, lista_blanca=_tracker_allow,
+                                     pase_hasta=pase)["allowed"]:
+            raise HTTPException(403, "tracker_locked")
+
     # El bootstrap cuesta segundos por máquina, así que NO se calcula por petición: se cachea y se
     # rehace como mucho una vez por minuto. Los datos entran de forma continua, pero un intervalo
     # sobre 16.000 tiradas no se mueve de forma apreciable en sesenta segundos.
@@ -954,13 +987,16 @@ def create_app(session_factory, chain: ChainSource,
     _EV_CACHE_TTL = 60.0
 
     @app.get("/gacha/ev")
-    async def gacha_ev(hours: int = Query(default=48, ge=1, le=168)):
+    async def gacha_ev(hours: int = Query(default=48, ge=1, le=168),
+                       authorization: Optional[str] = Header(None),
+                       s: Session = Depends(db)):
         """Cuánto paga de verdad cada máquina del gacha, medido sobre el feed público de CC.
 
-        Público: no dice nada de ningún jugador nuestro, solo del mercado. Cada fila lleva por
-        delante el estado de su cobertura, y el veredicto se RETIRA si la ventana no está completa
-        o tiene huecos: ver `ev_view`.
+        YA NO es público: hace falta acceso al Machine Tracker (wager reciente, pase o lista de
+        la casa — ver `_exigir_tracker`). Cada fila lleva por delante el estado de su cobertura, y
+        el veredicto se RETIRA si la ventana no está completa o tiene huecos: ver `ev_view`.
         """
+        _exigir_tracker(authorization, s)
         svc = _gacha_or_503()
         ahora = _time.time()
         if _ev_cache["filas"] and ahora - _ev_cache["t"] < _EV_CACHE_TTL and hours == 48:
@@ -1036,18 +1072,12 @@ def create_app(session_factory, chain: ChainSource,
         respuesta con `allowed: false`, que es lo que permite explicarle qué es esto y qué hace
         falta. Un error le diría que algo se ha roto, y no se ha roto nada.
 
-        Solo se consulta el acceso; el tracker en sí (`/gacha/ev`) sigue siendo público, porque su
-        contenido ya es público en el feed de Collector Crypt y cerrarlo daría una falsa sensación
-        de exclusividad a cambio de romper los enlaces que se comparten.
+        Esto solo CONSULTA el acceso; quien de verdad lo exige es `/gacha/ev` y `/gacha/ev/live`
+        (`_exigir_tracker`), que ahora responden 403 sin él. El tracker dejó de ser público en
+        cuanto se empezó a cobrar por él: hasta entonces esta pantalla era la única puerta, y el
+        dato en sí quedaba abierto detrás para quien le mandara un `curl`.
         """
-        wallet = None
-        if authorization and authorization.startswith("Bearer ") and privy is not None:
-            try:
-                wallet = privy.embedded_solana_wallet(authorization[len("Bearer "):])
-            except PrivyAuthError:
-                # Un token caducado no es un error de esta pantalla: se trata como "sin sesión" y
-                # el aviso le dirá que entre.
-                wallet = None
+        wallet = _wallet_opcional(authorization)
         pase = tracker_pass.pase_vigente(s, wallet) if wallet else None
         precios = {}
         if tracker_pass.precio_base_units(7, tracker_pass_7d_usdc, tracker_pass_30d_usdc):
@@ -1058,12 +1088,15 @@ def create_app(session_factory, chain: ChainSource,
                                      pase_hasta=pase, precios=precios)
 
     @app.get("/gacha/ev/live")
-    async def gacha_ev_live():
+    async def gacha_ev_live(authorization: Optional[str] = Header(None),
+                            s: Session = Depends(db)):
         """Lo que cambia tirada a tirada: la racha de cada rareza por máquina.
 
         Complementa a `/gacha/ev`, no lo sustituye. El edge, el intervalo y el veredicto siguen
-        viniendo de allí, porque son caros y lentos de mover.
+        viniendo de allí, porque son caros y lentos de mover. Lleva el mismo cierre que aquel: es
+        medición nuestra igual que el edge, no un dato ajeno.
         """
+        _exigir_tracker(authorization, s)
         ahora = _time.time()
         if _ev_vivo_cache["filas"] and ahora - _ev_vivo_cache["t"] < _EV_VIVO_TTL:
             return {"rows": _ev_vivo_cache["filas"], "updated_at": int(_ev_vivo_cache["t"])}

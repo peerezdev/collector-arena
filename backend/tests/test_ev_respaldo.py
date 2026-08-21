@@ -19,14 +19,22 @@ from sqlalchemy.pool import StaticPool
 import app.main as main_mod
 from app.db import init_db, make_session_factory
 from app.main import create_app
+from app.privy import PrivyVerifier
 from app.services.gacha import GachaService, GachaDisabled, GachaUpstreamError
 from app.services.winners_store import guardar
+from tests.conftest import make_es256, privy_auth_headers
 from tests.test_chain_mock import MockChainSource
 
 AHORA = datetime.now(timezone.utc)
 
 MAQUINAS = [{"code": "pokemon_50", "name": "Elite Pokémon", "price": 50, "buyback": 0.85,
              "available": True}]
+
+# `/gacha/ev` cerró sus puertas en cuanto el tracker pasó a cobrarse (tarea 7): este fichero
+# prueba el respaldo, no el acceso, así que la wallet de prueba se mete de oficio en la lista
+# blanca — la vía de la casa, no la del wager ni la del pase — para no ensuciar cada test con el
+# sembrado de una batalla o un `TrackerPass` que no viene a cuento aquí.
+WALLET = "8QDBKx8P3pxkRhiqyXFtYcPPf2CM1F5NiE5A8yjkgtm6"
 
 
 @pytest.fixture()
@@ -35,11 +43,18 @@ def client():
                            poolclass=StaticPool)
     init_db(engine)
     sf = make_session_factory(engine)
+    priv = make_es256()
+    app_id = "app-test"
     app = create_app(sf, MockChainSource(),
                      gacha=GachaService(base_url="https://dev-gacha.example.com", api_key=""),
-                     solana_rpc_url="https://api.devnet.solana.com")
+                     solana_rpc_url="https://api.devnet.solana.com",
+                     privy=PrivyVerifier(app_id=app_id, key_resolver=lambda kid: priv.public_key()),
+                     tracker_access_allowlist={WALLET})
     c = TestClient(app, raise_server_exceptions=True)
     c.session_factory = sf
+    # Headers por defecto y no por llamada: así ningún `client.get(...)` de este fichero tiene que
+    # tocarse para llevar el token, y la wallet autenticada coincide con la de la lista blanca.
+    c.headers.update(privy_auth_headers(priv, app_id, WALLET))
     return c
 
 

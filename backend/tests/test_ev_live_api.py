@@ -14,11 +14,18 @@ from sqlalchemy.pool import StaticPool
 
 from app.db import init_db, make_session_factory
 from app.main import create_app
+from app.privy import PrivyVerifier
 from app.services.gacha import GachaService
 from app.services.winners_store import guardar
+from tests.conftest import make_es256, privy_auth_headers
 from tests.test_chain_mock import MockChainSource
 
 AHORA = datetime.now(timezone.utc)
+
+# `/gacha/ev/live` cerró sus puertas junto con `/gacha/ev` (tarea 7): igual que en
+# `test_ev_respaldo.py`, la wallet de prueba entra por la lista blanca de la casa para que este
+# fichero pueda seguir probando solo el carril rápido, no el acceso.
+WALLET = "8QDBKx8P3pxkRhiqyXFtYcPPf2CM1F5NiE5A8yjkgtm6"
 
 
 def _build_client():
@@ -26,11 +33,16 @@ def _build_client():
                            poolclass=StaticPool)
     init_db(engine)
     sf = make_session_factory(engine)
+    priv = make_es256()
+    app_id = "app-test"
     app = create_app(sf, MockChainSource(),
                      gacha=GachaService(base_url="https://dev-gacha.example.com", api_key=""),
-                     solana_rpc_url="https://api.devnet.solana.com")
+                     solana_rpc_url="https://api.devnet.solana.com",
+                     privy=PrivyVerifier(app_id=app_id, key_resolver=lambda kid: priv.public_key()),
+                     tracker_access_allowlist={WALLET})
     c = TestClient(app, raise_server_exceptions=True)
     c.session_factory = sf
+    c.headers.update(privy_auth_headers(priv, app_id, WALLET))
     return c
 
 
