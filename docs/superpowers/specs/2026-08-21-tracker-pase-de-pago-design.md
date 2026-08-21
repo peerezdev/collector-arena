@@ -66,8 +66,13 @@ algo que un `curl` regala, y el primero que lo descubra lo publica.
 
 Lo que se protege es lo único irreconstruible. El `getAllWinners` de CC tope en 200 tiradas por
 máquina y no hay forma de mirar más atrás: ni con `timestamp`, ni con `page`, ni con `before` (todo
-medido). Quien quiera esos números tiene que haber estado escuchando el feed desde antes. El precio
-aceptado es que los enlaces compartidos dejan de enseñar el contenido.
+medido). Quien quiera esos números tiene que haber estado escuchando el feed desde antes.
+
+**Y no rompe ningún enlace, al contrario de lo que decía ese comentario.** Comprobado: el único
+consumidor de `/gacha/ev` en todo el repo es `MachineTrackerPage`, que ya no lo llama con la puerta
+puesta. Compartir `/machine-tracker` con alguien sin acceso YA le enseña la puerta hoy. Lo único que
+deja de funcionar es el script de un tercero que hubiera encontrado el endpoint abierto, que es
+justo lo que se quiere cerrar. El coste que el comentario temía no existe en nuestro producto.
 
 ## Configuración
 
@@ -254,6 +259,8 @@ Si `pass_prices` viene vacío, el bloque **no se renderiza**. Nada de botones de
 1. **Se mueve dinero real de un usuario.** Es la primera vez que cobramos por algo que no es una
    partida. El orden `pending` → cobro → `active` y el `critical` en el hueco son lo que lo hace
    reconciliable a mano; no hay reversión automática de una transferencia on-chain.
-2. **Cerrar los datos rompe los enlaces compartidos.** Es una consecuencia aceptada, no un descuido.
-3. **El precio se decide fuera del código.** Con 0 por defecto, un despliegue que olvide ponerlo
+2. **El precio se decide fuera del código.** Con 0 por defecto, un despliegue que olvide ponerlo
    simplemente no ofrece la compra, que es el fallo seguro.
+3. **Cerrar `/gacha/ev` no tiene el coste que parecía.** Se comprobó que no rompe ningún enlace
+   nuestro. Queda como riesgo menor que alguien de fuera tuviera un script contra el endpoint
+   abierto y deje de funcionar sin aviso, que es precisamente el efecto buscado.
