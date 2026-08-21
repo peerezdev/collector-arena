@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useIdentityToken } from '@privy-io/react-auth'
 import { COLORS, FONTS } from '../../theme'
 import { fetchEvLive, fetchEvRows, fetchTrackerAccess, type EvRow, type TrackerAccess }
@@ -29,18 +29,31 @@ export function MachineTrackerPage() {
   const { identityToken } = useIdentityToken()
   const [acceso, setAcceso] = useState<TrackerAccess | null>(null)
 
-  useEffect(() => {
-    let cancelado = false
+  const pedirAcceso = useRef(() => {})
+  pedirAcceso.current = () => {
     fetchTrackerAccess(identityToken)
-      .then((a) => { if (!cancelado) setAcceso(a) })
+      .then((a) => setAcceso(a))
       // Si no se puede preguntar, NO se abre: una puerta que se cae abierta ante un fallo de red
       // no es una puerta. Se deja el aviso con lo que se sabe, que es nada.
       .catch(() => {
-        if (!cancelado) setAcceso({ allowed: false, wagered_usd: 0, required_usd: 100,
-                                    missing_usd: 100, window_days: 7 })
+        setAcceso({ allowed: false, wagered_usd: 0, required_usd: 100,
+                    missing_usd: 100, window_days: 7, via: null, pass_until: null, pass_prices: {} })
       })
-    return () => { cancelado = true }
+  }
+
+  useEffect(() => {
+    pedirAcceso.current()
   }, [identityToken])
+
+  // Si el pase caduca (o CC deja de ver la apuesta) con la pantalla ya abierta, `PanelEv` recibe
+  // un 403 de `/gacha/ev*` y llama aquí: se vuelve a pedir el acceso, que al llegar `allowed:
+  // false` hace aparecer la puerta sola. No se pone `acceso` a `null` a mano porque eso enseñaría
+  // el "Measuring…" un instante, como si fuera la primera carga.
+  //
+  // Identidad estable (useCallback con `[]`, apoyada en el ref de arriba): si cambiara en cada
+  // render de esta pantalla, el efecto de los dos carriles de `PanelEv` la tiene como dependencia
+  // y se reiniciaría sin motivo, perdiendo el primer tic del sondeo.
+  const onSinAcceso = useCallback(() => pedirAcceso.current(), [])
 
   return (
     <div style={{ padding: '24px clamp(14px,2.4vw,28px) 44px', display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -58,7 +71,9 @@ export function MachineTrackerPage() {
       {/* Mientras no se sabe, no se enseña ninguna de las dos cosas: enseñar el panel y quitarlo
           medio segundo después sería peor que esperar, y enseñar el aviso a quien sí tiene acceso
           es acusarle de algo que no es verdad. */}
-      {acceso == null ? null : acceso.allowed ? <PanelEv /> : <TrackerGate acceso={acceso} />}
+      {acceso == null ? null : acceso.allowed
+        ? <PanelEv token={identityToken} acceso={acceso} onSinAcceso={onSinAcceso} />
+        : <TrackerGate acceso={acceso} />}
     </div>
   )
 }
@@ -70,7 +85,14 @@ export function MachineTrackerPage() {
  * esconden: que una máquina lleve seis horas midiéndose es información, y ocultarla haría pensar
  * que no existe.
  */
-function PanelEv() {
+function PanelEv({ token, acceso, onSinAcceso }: {
+  token: string | null
+  // Todavía sin usar aquí: lo necesita la tarea que pinta cuándo caduca el pase junto al
+  // UPDATED/STALE de la cabecera, y `acceso` solo vive en el componente padre.
+  acceso: TrackerAccess
+  onSinAcceso: () => void
+}) {
+  void acceso
   const [filas, setFilas] = useState<EvRow[] | null>(null)
   const [fallo, setFallo] = useState(false)
   // Cuándo se calculó lo que se está viendo. Del carril LENTO: es de donde salen el edge y el
@@ -105,18 +127,31 @@ function PanelEv() {
 
     const lento = () => {
       if (dormido()) return
-      fetchEvRows()
+      fetchEvRows(undefined, token)
         .then((d) => { if (!cancelado) { setFilas(d.rows); setSello(d.updated_at); setFallo(false) } })
-        // Solo se da por fallida la PRIMERA carga: una vez hay tarjetas en pantalla, un sondeo que
-        // falle no debe borrarlas, porque lo de antes sigue siendo cierto y vaciar la pantalla por
-        // un fallo de red pasajero es peor que enseñarlo un minuto más viejo.
-        .catch(() => { if (!cancelado) setFallo((antes) => antes || filasRef.current == null) })
+        .catch((e) => {
+          if (cancelado) return
+          // Un 403 no es un fallo: es que el pase caducó (o dejó de contar la apuesta) con la
+          // pantalla abierta. Enseñar "Couldn't load the tracker" diría que algo se ha roto cuando
+          // no se ha roto nada; lo correcto es volver a la puerta.
+          if ((e as { status?: number })?.status === 403) { onSinAcceso(); return }
+          // Solo se da por fallida la PRIMERA carga: una vez hay tarjetas en pantalla, un sondeo
+          // que falle no debe borrarlas, porque lo de antes sigue siendo cierto y vaciar la
+          // pantalla por un fallo de red pasajero es peor que enseñarlo un minuto más viejo.
+          setFallo((antes) => antes || filasRef.current == null)
+        })
     }
     const rapido = () => {
       if (dormido() || filasRef.current == null) return
-      fetchEvLive()
+      fetchEvLive(token)
         .then((d) => { if (!cancelado) setFilas((f) => (f ? aplicarVivo(f, d.rows) : f)) })
-        .catch(() => { /* el carril rápido es un extra: si falla, se sigue viendo lo del lento */ })
+        .catch((e) => {
+          if (cancelado) return
+          // Mismo trato que el carril lento: un 403 es la puerta, no un fallo de red que se pueda
+          // ignorar como el resto de errores de este carril.
+          if ((e as { status?: number })?.status === 403) { onSinAcceso(); return }
+          /* el carril rápido es un extra: si falla por otra razón, se sigue viendo lo del lento */
+        })
     }
 
     lento()
@@ -131,7 +166,7 @@ function PanelEv() {
       clearInterval(a); clearInterval(b)
       document.removeEventListener('visibilitychange', despertar)
     }
-  }, [])
+  }, [token, onSinAcceso])
 
   function cambiar(siguiente: Set<string>) {
     setOcultas(siguiente)

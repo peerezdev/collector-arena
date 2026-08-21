@@ -9,7 +9,8 @@ const pintar = (a: TrackerAccess) =>
   render(<MemoryRouter><TrackerGate acceso={a} /></MemoryRouter>)
 
 const acceso = (over: Partial<TrackerAccess> = {}): TrackerAccess => ({
-  allowed: false, wagered_usd: 60, required_usd: 100, missing_usd: 40, window_days: 7, ...over,
+  allowed: false, wagered_usd: 60, required_usd: 100, missing_usd: 40, window_days: 7,
+  via: null, pass_until: null, pass_prices: {}, ...over,
 })
 
 describe('el aviso del Machine Tracker', () => {
