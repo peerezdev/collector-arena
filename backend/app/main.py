@@ -5,6 +5,7 @@ import base64
 import logging
 import math
 import time as _time
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from fastapi import FastAPI, Depends, Header, HTTPException, Path, Request, Query, WebSocket, WebSocketDisconnect
@@ -36,7 +37,7 @@ from .services.ev_view import fila_ev
 from .services.tier_gaps import rachas_por_tier
 from .services.privy_signer import PrivySigner, PrivyNoVerificable
 from .services import escrow_pool, machine_visibility
-from .models import GachaPack, PackBattle, BattlePlayer, BattlePack, BattlePull, Tip, User
+from .models import GachaPack, PackBattle, BattlePlayer, BattlePack, BattlePull, Tip, User, TrackerPass
 from .chat import (ConnectionManager, ChatBuffer, abbreviate, save_chat_message,
                    recent_chat_messages, big_hit_multiple)
 from .services.pack_lobby import (
@@ -50,7 +51,7 @@ from .services.pack_orchestration import (
     usdc_balance_base_units, fetch_latest_blockhash,
     reconcile_voided_battle_live,
 )
-from .services.solana_tx import build_memo_tx, build_free_pack_proof_tx
+from .services.solana_tx import build_memo_tx, build_free_pack_proof_tx, confirmar_firma
 from .services.royale_funding import royale_buyin, collect_buyin, distribute_usdc, refund_buyin, withdraw_usdc, withdraw_usdc_with_fee
 from .services.nft_transfer import submit_signed_tx, build_transfer, nft_in_owner, UnsupportedNftStandard
 from .services.reservations import (reserve, reserved_total, royale_locked_total,
@@ -150,6 +151,10 @@ class SignTxBody(BaseModel):
 
 class GeneratePackBody(BaseModel):
     pack_type: str = Field(min_length=1, max_length=32, pattern=r"^[a-z0-9_]+$")
+
+
+class TrackerPassBody(BaseModel):
+    days: int
 
 
 class DevAnnounceBody(BaseModel):
@@ -1334,6 +1339,75 @@ def create_app(session_factory, chain: ChainSource,
         avail = bal - reserved_total(s, wallet)
         if avail < amount:
             raise HTTPException(402, "not enough available USDC")
+
+    @app.post("/gacha/tracker-pass")
+    async def gacha_tracker_pass(body: TrackerPassBody,
+                                 wallet: str = Depends(current_user),
+                                 wallet_id: str = Depends(current_user_id),
+                                 s: Session = Depends(db)):
+        """Comprar un pase del Machine Tracker.
+
+        EL ORDEN ES LO IMPORTANTE, porque aquí se mueve dinero real de un usuario y las dos cosas
+        que tienen que pasar (cobrar en la cadena, anotar en nuestra base) no pueden ser atómicas.
+
+          0. Saldo DISPONIBLE, que es el on-chain menos lo reservado. Sin esto, un pase podría
+             gastarse el dinero comprometido en una batalla y dejarla sin fondos al liquidar.
+          1. Fila en `pending`, que NO da acceso. Deja constancia de quién compra y cuánto antes
+             de tocar el dinero: si el proceso muere después, sabemos a quién mirar.
+          2. Cobro, y la firma se guarda EN CUANTO se conoce.
+          3. Confirmación de que llegó, y solo entonces `active`.
+
+        Al revés (activar y cobrar después) regala el acceso cuando el cobro falla, y ese fallo lo
+        provoca cualquiera con la cuenta vacía.
+
+        Queda un hueco: cobrado y confirmado, y morirse antes del paso 3. Por eso la firma se
+        guarda antes: un `pending` CON firma significa exactamente "se cobró y no se activó", que
+        es una consulta de una línea y un arreglo a mano. No hay reversión automática de una
+        transferencia on-chain, y un camino de devolución que no se ejecuta casi nunca estaría
+        roto el día que hiciera falta.
+        """
+        if body.days not in tracker_pass.DIAS_VALIDOS:
+            raise HTTPException(422, "invalid pass duration")
+        precio = tracker_pass.precio_base_units(body.days, tracker_pass_7d_usdc,
+                                                tracker_pass_30d_usdc)
+        if precio is None:
+            raise HTTPException(503, "tracker_pass_disabled")
+
+        await _require_available(wallet, precio, s)          # 402 si no llega. Nada escrito aún.
+
+        desde, hasta = tracker_pass.periodo(s, wallet, body.days)
+        fila = TrackerPass(id=str(uuid.uuid4()), wallet=wallet, days=body.days,
+                           price_base_units=precio, status="pending",
+                           starts_at=desde, ends_at=hasta)
+        s.add(fila)
+        s.commit()
+
+        fee_dest = fee_wallet_address or privy_operator_address
+        try:
+            blockhash = await fetch_latest_blockhash(solana_rpc_url)
+            firma = await collect_buyin(solana_rpc_url, privy_signer, wallet_id, wallet,
+                                        privy_operator_wallet_id, privy_operator_address,
+                                        fee_dest, cc_usdc_mint, precio, blockhash)
+        except Exception as e:
+            fila.status = "failed"
+            s.commit()
+            logger.warning("tracker-pass: el cobro falló para %s: %s", wallet, e)
+            raise HTTPException(502, "charge failed")
+
+        # La firma ANTES que el estado, siempre. Es lo que hace reconciliable el hueco.
+        fila.tx_signature = firma
+        s.commit()
+
+        if not await confirmar_firma(solana_rpc_url, firma):
+            fila.status = "failed"
+            s.commit()
+            logger.warning("tracker-pass: enviado y no confirmado para %s, firma %s", wallet, firma)
+            raise HTTPException(502, "charge not confirmed")
+
+        fila.status = "active"
+        s.commit()
+        return {"pass_until": int(hasta.timestamp()), "days": body.days,
+                "price_usdc": precio / 1_000_000}
 
     async def _machine_price(machine_code: str) -> int:
         """Precio como PUERTA: sobre el catálogo filtrado. Una máquina apagada a mano no puede
