@@ -83,6 +83,15 @@ _ENSURE_INDEXES = [
     ("tracker_passes", "ix_tracker_passes_wallet_status_ends",
      "CREATE INDEX IF NOT EXISTS ix_tracker_passes_wallet_status_ends "
      "ON tracker_passes (wallet, status, ends_at)"),
+    # Dos peticiones de compra a la vez de la misma wallet no pueden cobrar dos veces. El endpoint
+    # ya comprueba "¿tiene una pending?" antes de insertar, pero eso es un check-then-act: entre
+    # el SELECT y el INSERT cabe una segunda petición que pase la misma comprobación. Este índice
+    # es la parte atómica de esa garantía; sin él, el check de la app es solo una sugerencia.
+    # Parcial (`WHERE status = 'pending'`) a propósito: una wallet acumula muchas filas
+    # `active`/`failed` en su historial, y solo puede tener UNA compra a medio camino a la vez.
+    ("tracker_passes", "uq_tracker_passes_pending_wallet",
+     "CREATE UNIQUE INDEX IF NOT EXISTS uq_tracker_passes_pending_wallet "
+     "ON tracker_passes (wallet) WHERE status = 'pending'"),
 ]
 
 

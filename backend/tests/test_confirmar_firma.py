@@ -88,17 +88,21 @@ async def test_espera_mientras_el_rpc_todavia_no_sabe(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_si_nunca_se_confirma_devuelve_false_y_no_revienta(monkeypatch):
+async def test_si_nunca_se_confirma_devuelve_indeterminado_y_no_revienta(monkeypatch):
+    # `None`, no `False`: nunca vimos ni un `err` ni una confirmación, así que no sabemos si el
+    # dinero se movió. Devolver `False` aquí sería afirmar "seguro que no" sobre algo que no se
+    # sabe.
     llamadas = _cliente(monkeypatch, [None] * 10)
-    assert await confirmar_firma("http://rpc", "5xFirma", intentos=3, espera_s=0) is False
+    assert await confirmar_firma("http://rpc", "5xFirma", intentos=3, espera_s=0) is None
     assert llamadas["n"] == 3  # no sondea más de lo que se le pidió
 
 
 @pytest.mark.asyncio
 async def test_processed_no_basta(monkeypatch):
-    # `processed` puede revertirse. Solo valen `confirmed` y `finalized`.
+    # `processed` puede revertirse. Solo valen `confirmed` y `finalized`; agotar los intentos
+    # atascado en `processed` es indeterminado, no un rechazo.
     _cliente(monkeypatch, [{"confirmationStatus": "processed", "err": None}] * 3)
-    assert await confirmar_firma("http://rpc", "5xFirma", intentos=3, espera_s=0) is False
+    assert await confirmar_firma("http://rpc", "5xFirma", intentos=3, espera_s=0) is None
 
 
 # ── un fallo de red o un cuerpo raro no deben tumbar la petición del usuario ─────────────────
@@ -117,9 +121,10 @@ async def test_un_fallo_de_red_no_impide_confirmar_despues(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_si_la_red_falla_siempre_devuelve_false_y_no_revienta(monkeypatch):
+async def test_si_la_red_falla_siempre_devuelve_indeterminado_y_no_revienta(monkeypatch):
+    # La red nunca respondió: no es un rechazo, es no saber. `None`, no `False`.
     llamadas = _cliente(monkeypatch, [httpx.ConnectError("caída")] * 10)
-    assert await confirmar_firma("http://rpc", "5xFirma", intentos=3, espera_s=0) is False
+    assert await confirmar_firma("http://rpc", "5xFirma", intentos=3, espera_s=0) is None
     assert llamadas["n"] == 3
 
 

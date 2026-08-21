@@ -12,6 +12,8 @@ Compressed NFTs (cNFT / Bubblegum + DAS) are out of scope and need a different p
 import asyncio
 import base64
 import json
+from typing import Optional
+
 import httpx
 from solders.pubkey import Pubkey
 from solders.hash import Hash
@@ -250,25 +252,35 @@ def build_token_multi_transfer(
 
 
 async def confirmar_firma(rpc_url: str, firma: str, *, intentos: int = 10,
-                          espera_s: float = 1.5) -> bool:
-    """Si esa transacción llegó a la cadena y salió BIEN.
+                          espera_s: float = 1.5) -> Optional[bool]:
+    """Si esa transacción llegó a la cadena y salió BIEN. Tri-estado, no booleano.
 
     Existe porque `submit_signed_tx` solo envía: devuelve la firma sin esperar nada. Dar por
     cobrado un envío es regalar el pase cada vez que una transacción se cae después de salir.
 
-    Dos cosas que parecen detalles y no lo son:
+    Devuelve tres cosas distintas, y quien llama las trata distinto:
 
-      · Una transacción CONFIRMADA CON ERROR no cuenta. La cadena la aceptó y la ejecutó mal, así
-        que el dinero no se movió. Mirar solo `confirmationStatus` daría por bueno un cobro que
-        no ocurrió.
-      · `processed` no basta: puede revertirse. Solo valen `confirmed` y `finalized`.
+      · `True`: confirmada o finalizada, sin error. El dinero se movió.
+      · `False`: RECHAZO DEFINITIVO. La cadena la aceptó y la ejecutó MAL (`err` presente). El
+        dinero NO se movió, y eso es una certeza, no una sospecha.
+      · `None`: INDETERMINADO. Se agotaron los intentos sin ver ni un `err` ni una confirmación:
+        red que nunca respondió, RPC que nunca vio la firma, o una transacción que se quedó en
+        `processed` sin asentarse. El dinero PUEDE haberse movido.
 
-    Un fallo de red se trata como "todavía no", nunca como confirmada. Ante la duda, no se activa
-    el pase: el jugador reintenta, que es recuperable, en vez de que nosotros regalemos acceso.
+    Antes esto devolvía `False` también para el caso indeterminado, y eso mentía: juntaba "seguro
+    que no" con "ni idea" en el mismo valor, y quien llamaba no podía tratarlas distinto —
+    exactamente el fallo que dejaba a alguien cobrado, sin acceso y sin ninguna firma que
+    reconciliar (nada distinguía ese caso de un rechazo limpio). Aquí solo se cuenta lo que se
+    sabe; decidir qué hacer con la incertidumbre es cosa de quien llama.
 
-    Un cuerpo que no es JSON (200 con HTML de un proxy caído, respuesta vacía bajo carga...)
-    cuenta como el mismo "todavía no": `r.json()` puede lanzar `json.JSONDecodeError`, que NO es
-    subclase de `httpx.HTTPError`, así que hay que capturarla aparte para no dejarla escapar.
+    Dos cosas más que parecen detalles y no lo son:
+
+      · `processed` no basta: puede revertirse. Solo valen `confirmed` y `finalized`; lo demás
+        (incluido quedarse en `processed` hasta agotar los intentos) es indeterminado.
+      · Un cuerpo que no es JSON (200 con HTML de un proxy caído, respuesta vacía bajo carga...)
+        cuenta como el mismo "todavía no lo sé": `r.json()` puede lanzar `json.JSONDecodeError`,
+        que NO es subclase de `httpx.HTTPError`, así que hay que capturarla aparte para no
+        dejarla escapar.
     """
     for intento in range(intentos):
         if intento:
@@ -290,4 +302,4 @@ async def confirmar_firma(rpc_url: str, firma: str, *, intentos: int = 10,
             return False            # se ejecutó y falló: el dinero NO se movió
         if valor.get("confirmationStatus") in ("confirmed", "finalized"):
             return True
-    return False
+    return None                     # agotados los intentos sin veredicto: INDETERMINADO
