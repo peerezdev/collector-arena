@@ -1,5 +1,5 @@
 import os
-from typing import List
+from typing import List, Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -108,6 +108,12 @@ class Settings(BaseSettings):
     # y no hay ninguna vía por la que un jugador se añada solo. env: TRACKER_ACCESS_ALLOWLIST
     tracker_access_allowlist: str = ""
 
+    # Pase de pago del Machine Tracker, la vía alternativa al wager de 100 USDC.
+    # CERO APAGA LA COMPRA, igual que `gacha_base_url` vacío apaga el gacha: así esto se puede
+    # desplegar antes de haber decidido el precio, sin ofrecer nada a medias.
+    tracker_pass_7d_usdc: float = 0.0      # env: TRACKER_PASS_7D_USDC
+    tracker_pass_30d_usdc: float = 0.0     # env: TRACKER_PASS_30D_USDC
+
     @property
     def royale_creator_allowlist_set(self) -> set[str]:
         return {w.strip() for w in self.royale_creator_allowlist.split(",") if w.strip()}
@@ -115,6 +121,21 @@ class Settings(BaseSettings):
     @property
     def tracker_access_allowlist_set(self) -> set[str]:
         return {w.strip() for w in self.tracker_access_allowlist.split(",") if w.strip()}
+
+
+def avisar_precios_raros(s7: float, s30: float) -> Optional[str]:
+    """Si el pase de 30 días sale MÁS CARO por día que el de 7, devuelve el aviso.
+
+    No es un error que deba impedir arrancar: el precio es una decisión de negocio y quizá alguien
+    lo quiere así por un tiempo. Pero es un fallo de configuración que, sin este aviso, solo
+    descubre el cliente que eche la cuenta, y para entonces ya ha comprado el caro.
+    """
+    if s7 <= 0 or s30 <= 0:
+        return None                       # con la vía apagada no hay nada que comparar
+    if s30 / 30.0 > s7 / 7.0:
+        return (f"TRACKER_PASS_30D_USDC ({s30}) sale a {s30 / 30:.3f}/día, más caro que "
+                f"TRACKER_PASS_7D_USDC ({s7}) a {s7 / 7:.3f}/día")
+    return None
 
 
 def get_settings() -> Settings:

@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
 from . import log_redaccion
-from .config import get_settings
+from .config import get_settings, avisar_precios_raros
 from .db import make_engine, make_session_factory, init_db
 from .privy import PrivyVerifier, PrivyAuthError
 from .chain.base import ChainSource
@@ -2647,6 +2647,9 @@ def build_default_app() -> FastAPI:
             "PRIVY_OPERATOR_WALLET_ID/PRIVY_OPERATOR_ADDRESS unset — Pack Battle/Royale will "
             "void at settle (escrow gas can't be funded). Set them in backend/.env."
         )
+    _aviso = avisar_precios_raros(s.tracker_pass_7d_usdc, s.tracker_pass_30d_usdc)
+    if _aviso:
+        logger.warning("precios del pase del tracker: %s", _aviso)
     return create_app(session_factory, chain, elo_start=s.elo_start, elo_k=s.elo_k,
                       ev_tracker_enabled=s.ev_tracker_enabled,
                       cors_origins=s.cors_origins, gacha=gacha, privy=privy,
