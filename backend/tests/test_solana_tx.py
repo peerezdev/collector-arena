@@ -6,9 +6,13 @@ from solders.pubkey import Pubkey
 from solders.transaction import Transaction
 from solders.token.associated import get_associated_token_address
 
+from solders.keypair import Keypair
+
 from app.services.solana_tx import (
     build_nft_transfer,
     build_token_multi_transfer,
+    build_token_transfer,
+    leer_firma,
     TOKEN_PROGRAM,
     ATA_PROGRAM,
 )
@@ -22,6 +26,14 @@ MINT     = "So11111111111111111111111111111111111111112"   # wrapped SOL mint (v
 BLOCKHASH = "11111111111111111111111111111111"             # 32-zero-byte hash, always valid
 
 TOKEN_2022 = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+
+# Claves de usar y tirar para poder FIRMAR de verdad en los tests de `leer_firma`: sin la clave
+# privada no hay forma de rellenar una ranura de firma, y con una firma de mentira no se podría
+# distinguir "firmada" de "sin firmar", que es justo lo que hay que probar.
+OPERADOR = Keypair()
+OPERADOR_PUB = str(OPERADOR.pubkey())
+JUGADOR = Keypair()
+JUGADOR_PUB = str(JUGADOR.pubkey())
 
 
 @pytest.fixture()
@@ -227,3 +239,52 @@ class TestMultiTransferFeeSplit:
             dest_ata = get_associated_token_address(Pubkey.from_string(dest), Pubkey.from_string(MINT),
                                                     Pubkey.from_string(TOKEN_PROGRAM))
             assert dest_ata in keys
+
+
+# ---------------------------------------------------------------------------
+# leer_firma — la firma vive DENTRO de la transacción, no la inventa el RPC
+# ---------------------------------------------------------------------------
+class TestLeerFirma:
+    """Poder leer la firma antes de enviar es lo que permite anotar en la base "voy a enviar ESTA
+    transacción" ANTES de enviarla. Lo único que hay que blindar es que no confunda una
+    transacción SIN firmar —cuya ranura son 64 ceros, que en base58 se ven como un `1111…`
+    perfectamente presentable— con una firmada."""
+
+    def _tx_sin_firmar(self):
+        # Calca la del cobro: el jugador es la autoridad del USDC y el operador paga la fee, así
+        # que la transacción lleva DOS firmantes y el de la ranura 0 es el operador.
+        return build_token_transfer(JUGADOR_PUB, DEST, MINT, BLOCKHASH,
+                                    amount=10, decimals=6, fee_payer=OPERADOR_PUB)
+
+    def test_una_tx_SIN_firmar_no_cuela_como_firmada(self):
+        # La trampa entera de este helper: `str(Signature.default())` es "1111…", una cadena que
+        # parece una firma y que guardada en la base sería imposible de reconciliar con nada.
+        with pytest.raises(ValueError, match="no está firmada"):
+            leer_firma(self._tx_sin_firmar())
+
+    def test_una_tx_firmada_devuelve_SU_firma(self):
+        tx = Transaction.from_bytes(base64.b64decode(self._tx_sin_firmar()))
+        tx.partial_sign([OPERADOR], tx.message.recent_blockhash)
+        firmada = base64.b64encode(bytes(tx)).decode()
+
+        firma = leer_firma(firmada)
+        assert firma == str(tx.signatures[0])
+        assert set(firma) != {"1"}, "no es la firma de ceros"
+        # Y es la del FEE PAYER, que es la que el RPC devolvería como resultado de sendTransaction:
+        # `signatures[i]` corresponde a `account_keys[i]`, y `account_keys[0]` es quien paga.
+        assert tx.message.account_keys[0] == OPERADOR.pubkey()
+
+    def test_firmar_SOLO_al_otro_firmante_no_basta(self):
+        # La transacción del cobro lleva dos firmantes: el jugador (autoridad del USDC) y el
+        # operador (fee payer). Si solo firmara el jugador, la ranura 0 seguiría a ceros y la
+        # transacción no sería enviable — devolver "una firma" ahí sería mentir.
+        tx = Transaction.from_bytes(base64.b64decode(self._tx_sin_firmar()))
+        tx.partial_sign([JUGADOR], tx.message.recent_blockhash)
+        with pytest.raises(ValueError, match="no está firmada"):
+            leer_firma(base64.b64encode(bytes(tx)).decode())
+
+    def test_algo_que_no_es_una_transaccion_falla_claro(self):
+        # Si Privy devolviera basura, mejor un ValueError explícito que un IndexError a saber
+        # dónde: quien llama lo trata como "no se pudo preparar el cobro" y no deja rastro.
+        with pytest.raises(ValueError, match="no se pudo interpretar"):
+            leer_firma("esto-no-es-base64-de-una-tx")

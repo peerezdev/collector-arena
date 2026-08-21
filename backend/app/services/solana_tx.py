@@ -19,6 +19,7 @@ from solders.pubkey import Pubkey
 from solders.hash import Hash
 from solders.instruction import Instruction, AccountMeta
 from solders.message import Message
+from solders.signature import Signature
 from solders.transaction import Transaction
 from solders.token.associated import get_associated_token_address
 from solders.system_program import transfer, TransferParams
@@ -249,6 +250,34 @@ def build_token_multi_transfer(
         ]))
     message = Message.new_with_blockhash(ixs, payer_pk, blockhash)
     return base64.b64encode(bytes(Transaction.new_unsigned(message))).decode()
+
+
+def leer_firma(signed_tx_b64: str) -> str:
+    """La firma (el "txid") de una transacción YA FIRMADA, leída EN LOCAL y sin tocar la red.
+
+    POR QUÉ EXISTE. El identificador de una transacción de Solana ES su primera firma, y esa firma
+    viaja DENTRO de los bytes que se mandan: no la inventa el RPC al recibirla. Poder leerla antes
+    de enviar es lo que permite anotar en la base "voy a enviar ESTA transacción" ANTES de
+    enviarla — y por tanto no depender de que el envío conteste para saber qué mirar en un
+    explorador si el envío se queda a medias.
+
+    Es la primera firma y no otra porque `account_keys[0]` de un mensaje de Solana es siempre
+    quien paga la fee, y `signatures[i]` corresponde a `account_keys[i]`: la ranura 0 es la del
+    fee payer, que es la que el RPC devuelve como resultado de `sendTransaction`.
+
+    UNA TX SIN FIRMAR NO ES UN ERROR SILENCIOSO. `Transaction.new_unsigned` deja esa ranura a
+    ceros, y una firma de ceros se serializa a un base58 `1111…` que parece una cadena
+    perfectamente válida. Guardarla sería peor que fallar: dejaría en la base una firma que no
+    existe en ninguna cadena y que nadie podría reconciliar nunca. Por eso se rechaza a propósito.
+    """
+    try:
+        tx = Transaction.from_bytes(base64.b64decode(signed_tx_b64))
+    except Exception as e:                       # base64 roto, bytes que no son una transacción…
+        raise ValueError("no se pudo interpretar la transacción firmada: %s" % e)
+    firmas = tx.signatures
+    if not firmas or firmas[0] == Signature.default():
+        raise ValueError("la transacción no está firmada: la ranura del fee payer está a ceros")
+    return str(firmas[0])
 
 
 async def confirmar_firma(rpc_url: str, firma: str, *, intentos: int = 10,

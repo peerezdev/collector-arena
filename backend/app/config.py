@@ -113,6 +113,11 @@ class Settings(BaseSettings):
     # desplegar antes de haber decidido el precio, sin ofrecer nada a medias.
     tracker_pass_7d_usdc: float = 0.0      # env: TRACKER_PASS_7D_USDC
     tracker_pass_30d_usdc: float = 0.0     # env: TRACKER_PASS_30D_USDC
+    # Freno de peticiones de la compra, por wallet y ventana. Existe por lo mismo que el del
+    # withdraw: cada intento mueve USDC de verdad y hace que el operador pague gas (y, la primera
+    # vez, la renta de la ATA de destino). Contadores propios, no compartidos con withdraw ni tip.
+    tracker_pass_rate_limit: int = 5        # env: TRACKER_PASS_RATE_LIMIT
+    tracker_pass_rate_window_s: float = 60.0  # env: TRACKER_PASS_RATE_WINDOW_S
 
     @property
     def royale_creator_allowlist_set(self) -> set[str]:

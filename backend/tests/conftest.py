@@ -1,3 +1,4 @@
+import base64
 import json
 import time
 
@@ -6,7 +7,7 @@ import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.pool import StaticPool
 
 from app.chain.mock import MockChainSource
@@ -15,7 +16,10 @@ from app.main import create_app
 from app.privy import PrivyVerifier
 from app.services import tracker_pass
 from app.services.privy_signer import PrivySignerError
-from solders.hash import ParseHashError
+from app.services.solana_tx import build_memo_tx
+from app.models import TrackerPass
+from solders.keypair import Keypair
+from solders.transaction import Transaction
 from app.services.gacha import GachaService
 
 
@@ -107,40 +111,105 @@ TRACKER_PASS_WALLET = "8QDBKx8P3pxkRhiqyXFtYcPPf2CM1F5NiE5A8yjkgtm6"
 
 
 class _FirmanteFalso:
-    """No firma nada: el cobro se intercepta antes de llegar aquí."""
+    """No firma nada: en el camino mockeado, `construir_y_firmar_cobro` está interceptado y nunca
+    llega aquí."""
     enabled = True
 
 
-def _crear_pase_entorno(monkeypatch, *, s7=10.0, s30=30.0, operator_address=None):
-    """Construye la app de la compra del pase y le interviene el dinero. `s7`/`s30` son los
-    precios de 7 y 30 días en USDC; a 0.0 el pase queda APAGADO (ver `pase_precio_apagado`).
-    `operator_address` deja simular la wallet de destino del cobro sin configurar (H, ronda 3;
-    ver `pase_fee_dest_vacio`) — vacía por defecto sería "OpAddr", que ni siquiera es una wallet
-    válida y hacía que TODO se rechazara con el 503 nuevo de H, así que el valor por defecto aquí
-    es una dirección base58 real."""
+class _FirmanteDeVerdad:
+    """Firma DE VERDAD, en local y con una clave de usar y tirar, la ranura del OPERADOR.
+
+    POR QUÉ EXISTE. Con `construir_y_firmar_cobro` mockeado —como estaba TODA la suite— ningún
+    test puede ver un `ValueError` real de construcción, y esa es exactamente la familia de fallos
+    que se ha colado tres rondas seguidas (el blockhash, la wallet de destino, la dirección del
+    operador, el mint). Con este doble, el tramo construir → firmar → leer la firma corre entero
+    y sin mocks; lo único intervenido es el envío, que es lo que no se puede hacer en un test.
+
+    Del jugador no tenemos la clave privada (la guarda Privy), así que su ranura de firma se queda
+    a ceros. Da igual: la firma que IDENTIFICA una transacción de Solana es la del fee payer, y el
+    fee payer aquí es el operador — que sí es nuestro. Y nada de esto se envía a ninguna red.
+    """
+    enabled = True
+
+    def __init__(self, operator_wallet_id, operator_keypair):
+        self._wid = operator_wallet_id
+        self._kp = operator_keypair
+
+    async def sign_solana(self, wallet_id, tx_b64):
+        tx = Transaction.from_bytes(base64.b64decode(tx_b64))
+        if wallet_id == self._wid:
+            tx.partial_sign([self._kp], tx.message.recent_blockhash)
+        return base64.b64encode(bytes(tx)).decode()
+
+
+def _tx_firmada_de_verdad() -> str:
+    """Una transacción de verdad, firmada de verdad, en base64.
+
+    Es lo que devuelve el doble de `construir_y_firmar_cobro` en el camino mockeado. Devolver una
+    cadena cualquiera ("FirmaFalsa") NO valdría: el endpoint le pasa esto a `leer_firma`, que solo
+    acepta bytes que sean una transacción con la ranura del fee payer rellena. Así el `tx_signature`
+    que acaba en la base es una firma base58 real, como en producción.
+    """
+    kp = Keypair()
+    tx = Transaction.from_bytes(base64.b64decode(
+        build_memo_tx(str(kp.pubkey()), "11111111111111111111111111111111")))
+    tx.partial_sign([kp], tx.message.recent_blockhash)
+    return base64.b64encode(bytes(tx)).decode()
+
+
+def _crear_pase_entorno(monkeypatch, *, s7=10.0, s30=30.0, operator_address=None,
+                        cc_usdc_mint="Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG9Vp2KGtKJr",
+                        fee_wallet_address="", construccion_real=False):
+    """Construye la app de la compra del pase y le interviene el dinero.
+
+    `s7`/`s30` son los precios de 7 y 30 días en USDC; a 0.0 el pase queda APAGADO (ver
+    `pase_precio_apagado`). `operator_address` deja simular la wallet del operador sin configurar
+    o mal escrita. `cc_usdc_mint` deja simular un mint mal escrito. `fee_wallet_address` deja
+    separar la wallet de destino (que el endpoint valida por su cuenta) de la del operador (que
+    no valida, y que por tanto solo revienta al CONSTRUIR).
+
+    `construccion_real=True` NO mockea `construir_y_firmar_cobro`: se construye y se firma de
+    verdad, y solo el envío queda intervenido. Es la única forma de que un test vea los
+    `ValueError`/`ParseHashError` que lanza solders con la configuración mal puesta.
+    """
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False},
                            poolclass=StaticPool)
     init_db(engine)
     sf = make_session_factory(engine)
     priv = make_es256()
+    operator_kp = Keypair()
     if operator_address is None:
-        operator_address = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+        # Con construcción real tiene que ser la clave que este doble sabe firmar; si no, cualquier
+        # dirección base58 válida sirve.
+        operator_address = (str(operator_kp.pubkey()) if construccion_real
+                            else "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU")
+    firmante = (_FirmanteDeVerdad("op-id", operator_kp) if construccion_real else _FirmanteFalso())
     app = create_app(sf, MockChainSource(),
                      gacha=GachaService(base_url="https://dev-gacha.example.com", api_key=""),
                      privy=PrivyVerifier(app_id=TRACKER_PASS_APP_ID,
                                          key_resolver=lambda kid: priv.public_key()),
-                     privy_signer=_FirmanteFalso(),
+                     privy_signer=firmante,
                      privy_operator_wallet_id="op-id",
                      privy_operator_address=operator_address,
+                     fee_wallet_address=fee_wallet_address,
+                     cc_usdc_mint=cc_usdc_mint,
                      solana_rpc_url="https://rpc.test",
                      tracker_pass_7d_usdc=s7, tracker_pass_30d_usdc=s30)
 
-    # `cobro` y `confirma` son tri-estado desde que el endpoint distingue "rechazo definitivo" de
-    # "no lo sé": `cobro` guarda un valor de vuelta o una Exception (RuntimeError = rechazo,
-    # cualquier otra = indeterminado); `confirma` guarda True/False/None (confirmada / rechazada
-    # en cadena / indeterminada), calcando lo que devuelve `confirmar_firma` de verdad.
-    mando = {"saldo": 1_000_000_000, "reservado": 0, "cobro": "FirmaFalsa", "confirma": True,
-             "blockhash": "11111111111111111111111111111111", "acceso_al_cobrar": None}
+    # El cobro está partido en dos, y los dobles también, porque la LÍNEA ENTRE LOS DOS ES EL
+    # DISEÑO: antes de `enviar` nada se ha difundido y todo es reintentable sin rastro; a partir
+    # de `enviar`, un error ya no prueba que la transacción no haya salido.
+    #   · `firmar`: la transacción firmada que devolvería `construir_y_firmar_cobro`, o una
+    #     Exception (cualquiera: aquí ya no se clasifica por tipo, nunca deja fila).
+    #   · `enviar`: lo que devolvería el RPC, o una Exception (RuntimeError = rechazo explícito;
+    #     cualquier otra = indeterminado).
+    #   · `confirma`: True/False/None, calcando lo que devuelve `confirmar_firma` de verdad.
+    mando = {"saldo": 1_000_000_000, "reservado": 0,
+             "firmar": _tx_firmada_de_verdad(), "enviar": "FirmaQueDevuelveElRPC",
+             "confirma": True, "blockhash": "11111111111111111111111111111111",
+             "wallet_del_cobro": TRACKER_PASS_WALLET,
+             "filas_al_firmar": None, "acceso_al_cobrar": None,
+             "firma_en_la_fila_al_enviar": None}
 
     async def _saldo(*a, **k):
         return mando["saldo"]
@@ -149,40 +218,58 @@ def _crear_pase_entorno(monkeypatch, *, s7=10.0, s30=30.0, operator_address=None
         return mando["reservado"]
 
     async def _blockhash(*a, **k):
-        # También tri-estado por el mismo motivo que `cobro`: pedir el blockhash es la PRIMERA
-        # llamada a la red del endpoint, y un fallo aquí es determinado (nada se ha construido ni
-        # firmado todavía) — ver `pase_blockhash_revienta`.
         if isinstance(mando["blockhash"], Exception):
             raise mando["blockhash"]
         return mando["blockhash"]
 
-    async def _cobro(*a, **k):
-        # Fotografía del ACCESO —no de la columna `status`— en el instante en que se intenta el
-        # cobro. `pase_vigente` es la misma función que usa `/gacha/tracker-access` para decidir
-        # si alguien entra, así que esto sobrevive a un renombrado de `status` y caza además
-        # cualquier estado nuevo que diera acceso sin que se llame "active": lo único que puede
-        # cazar "se activó antes de cobrar", porque las ramas de fallo del endpoint vuelven a
-        # dejar la fila en `failed` (o la dejan en `pending`, desde que existe lo indeterminado)
-        # al terminar, así que mirar solo el estado FINAL nunca vería esa ventana.
-        wallet_de_la_compra = a[3]
+    async def _firmar(*a, **k):
+        # Cuenta las filas de esa wallet EN EL INSTANTE de construir y firmar. Es la invariante
+        # nueva de esta ronda y la que hace imposible por construcción la familia de fallos que
+        # encerraba wallets: si aquí ya hubiera una fila, un `ValueError` de configuración
+        # volvería a dejarla puesta y a bloquear a esa wallet para siempre.
+        mando["wallet_del_cobro"] = a[2]
         with sf() as chk:
-            mando["acceso_al_cobrar"] = tracker_pass.pase_vigente(chk, wallet_de_la_compra) is not None
-        if isinstance(mando["cobro"], Exception):
-            raise mando["cobro"]
-        return mando["cobro"]
+            mando["filas_al_firmar"] = len(chk.scalars(
+                select(TrackerPass).where(TrackerPass.wallet == a[2])).all())
+        if isinstance(mando["firmar"], Exception):
+            raise mando["firmar"]
+        return mando["firmar"]
+
+    async def _enviar(*a, **k):
+        # Fotografía del ACCESO —no de la columna `status`— en el instante en que el dinero se
+        # mueve de verdad. `pase_vigente` es la misma función que usa `/gacha/tracker-access`, así
+        # que esto sobrevive a un renombrado de `status` y caza cualquier estado nuevo que diera
+        # acceso sin llamarse "active": es lo único que puede cazar "se activó antes de cobrar",
+        # porque las ramas de fallo vuelven a dejar la fila en `failed`/`pending` al terminar y
+        # mirar solo el estado FINAL nunca vería esa ventana.
+        with sf() as chk:
+            mando["acceso_al_cobrar"] = (
+                tracker_pass.pase_vigente(chk, mando["wallet_del_cobro"]) is not None)
+            # Y la promesa central de esta ronda: cuando el dinero se mueve, la fila YA existe y
+            # YA tiene su firma. Sin esto no habría forma de probar que no queda ninguna `pending`
+            # sin firma —la única que necesitaba ojos humanos— salvo mirando el estado final.
+            en_curso = chk.scalars(select(TrackerPass).where(
+                TrackerPass.wallet == mando["wallet_del_cobro"],
+                TrackerPass.status == "pending")).first()
+            mando["firma_en_la_fila_al_enviar"] = (
+                en_curso.tx_signature if en_curso is not None else None)
+        if isinstance(mando["enviar"], Exception):
+            raise mando["enviar"]
+        return mando["enviar"]
 
     async def _confirma(*a, **k):
-        # Se registran los kwargs de cada llamada para poder distinguir (K, ronda 3) la
-        # reconciliación —que le pasa un presupuesto corto— de la confirmación del cobro nuevo
-        # —que usa los valores por defecto de verdad, porque ahí sí hace falta esperar a que una
-        # transacción recién enviada tenga tiempo de asentarse.
+        # Se registran los kwargs de cada llamada para poder distinguir la reconciliación —que le
+        # pasa un presupuesto corto— de la confirmación del cobro nuevo —que usa los valores por
+        # defecto de verdad, porque a una recién enviada sí hay que darle tiempo de asentarse.
         mando.setdefault("confirma_llamadas", []).append(dict(k))
         return mando["confirma"]
 
     monkeypatch.setattr("app.main.usdc_balance_base_units", _saldo)
     monkeypatch.setattr("app.main.reserved_total", _reservado)
     monkeypatch.setattr("app.main.fetch_latest_blockhash", _blockhash)
-    monkeypatch.setattr("app.main.collect_buyin", _cobro)
+    if not construccion_real:
+        monkeypatch.setattr("app.main.construir_y_firmar_cobro", _firmar)
+    monkeypatch.setattr("app.main.enviar_cobro", _enviar)
     monkeypatch.setattr("app.main.confirmar_firma", _confirma)
 
     cuenta = {"type": "wallet", "chain_type": "solana", "connector_type": None,
@@ -192,6 +279,7 @@ def _crear_pase_entorno(monkeypatch, *, s7=10.0, s30=30.0, operator_address=None
     c.session_factory = sf
     c.hdrs = {"Authorization": f"Bearer {make_id_token(priv, TRACKER_PASS_APP_ID, [cuenta])}"}
     c.mando = mando
+    c.doble_de_firmar = _firmar          # para reintentar tras un fallo de construcción real
     return c
 
 
@@ -216,10 +304,10 @@ def pase_precio_apagado(monkeypatch):
 
 @pytest.fixture()
 def pase_fee_dest_vacio(monkeypatch):
-    """Misma app que `pase_entorno`, pero sin wallet de destino del cobro configurada (H, ronda
-    3): ni `fee_wallet_address` (que aquí siempre está vacía) ni `privy_operator_address` tienen
-    un valor. Antes de H, esto reventaba `collect_buyin` con un `ValueError` de solders AL
-    CONSTRUIR la transacción y encerraba la wallet en `pending` para siempre."""
+    """Misma app que `pase_entorno`, pero sin wallet de destino del cobro configurada: ni
+    `fee_wallet_address` ni `privy_operator_address` tienen valor. Con el orden nuevo esto ya no
+    encerraría a nadie (no habría fila), pero un 503 "misconfigured" sigue diciéndole a quien
+    despliega dónde mirar, en vez de mandarlo a buscar en la cadena un cobro que no se intentó."""
     return _crear_pase_entorno(monkeypatch, operator_address="")
 
 
@@ -249,46 +337,41 @@ def pase_saldo_reservado(pase_entorno):
 
 @pytest.fixture()
 def pase_blockhash_revienta(pase_entorno):
-    # Pedir el blockhash es lo PRIMERO que toca la red, antes de construir o firmar nada: un
-    # fallo aquí es determinado, no indeterminado, sin importar el tipo de excepción (a
-    # diferencia de lo que pasa dentro de `collect_buyin`, donde SÍ importa).
+    # Pedir el blockhash es lo primero que toca la red, y pasa ANTES de que exista fila: no hay
+    # nada que desbloquear y el jugador puede reintentar al momento.
     pase_entorno.mando["blockhash"] = httpx.ConnectError("el RPC no respondió")
     return pase_entorno
 
 
 @pytest.fixture()
-def pase_cobro_revienta(pase_entorno):
-    # RuntimeError: el RPC rechazó `sendTransaction` de forma explícita (ver nft_transfer.py). El
-    # dinero no se movió — un rechazo de ESE nodo, no una garantía absoluta de red, pero la mejor
-    # lectura que tenemos con lo que contestó.
-    pase_entorno.mando["cobro"] = RuntimeError("sendTransaction failed")
-    return pase_entorno
-
-
-@pytest.fixture()
 def pase_firma_rechazada(pase_entorno):
-    # PrivySignerError: `sign_solana` falló ANTES de que hubiera nada que mandar a Solana (ver
-    # privy_signer.py). Tan determinado como el RuntimeError de arriba: no llegó a firmarse, así
-    # que no pudo salir nada.
-    pase_entorno.mando["cobro"] = PrivySignerError("privy rpc unavailable")
+    # PrivySignerError: `sign_solana` falló. También antes de que exista fila.
+    pase_entorno.mando["firmar"] = PrivySignerError("privy rpc unavailable")
     return pase_entorno
 
 
 @pytest.fixture()
-def pase_blockhash_malformado(pase_entorno):
-    # ParseHashError: el blockhash que devolvió el RPC no se pudo ni interpretar AL CONSTRUIR la
-    # transacción (dentro de `collect_buyin`, antes de firmar nada). Tan determinado como los
-    # otros dos: la construcción nunca llegó a producir nada que enviar.
-    pase_entorno.mando["cobro"] = ParseHashError("failed to decoded string to hash")
+def pase_construccion_revienta(pase_entorno):
+    # Un `ValueError` cualquiera saliendo de construir: la familia de fallos que encerró wallets
+    # tres rondas seguidas. Con el orden nuevo ni siquiera hace falta reconocerla por su tipo.
+    pase_entorno.mando["firmar"] = ValueError("String is the wrong size")
     return pase_entorno
 
 
 @pytest.fixture()
-def pase_cobro_indeterminado(pase_entorno):
-    # Cualquier excepción que NO sea RuntimeError/PrivySignerError: un timeout del propio
-    # `sendTransaction`, un 5xx del proxy tras reenviar... No sabemos si la transacción llegó a
-    # salir de verdad, porque pasó DESPUÉS del envío.
-    pase_entorno.mando["cobro"] = TimeoutError("el RPC no respondió")
+def pase_envio_rechazado(pase_entorno):
+    # RuntimeError DESDE EL ENVÍO: el RPC rechazó `sendTransaction` de forma explícita (ver
+    # nft_transfer.py). El dinero no se movió — un rechazo de ESE nodo, no una garantía absoluta
+    # de red, pero la mejor lectura que tenemos con lo que contestó.
+    pase_entorno.mando["enviar"] = RuntimeError("sendTransaction failed")
+    return pase_entorno
+
+
+@pytest.fixture()
+def pase_envio_indeterminado(pase_entorno):
+    # Cualquier otra excepción DESDE EL ENVÍO: un timeout, un 5xx del proxy tras reenviar... No
+    # sabemos si la transacción salió, porque pasó ya en el POST de `sendTransaction`.
+    pase_entorno.mando["enviar"] = TimeoutError("el RPC no respondió")
     return pase_entorno
 
 
@@ -305,3 +388,34 @@ def pase_confirmacion_indeterminada(pase_entorno):
     # None: se agotaron los intentos sin ver ni un `err` ni una confirmación.
     pase_entorno.mando["confirma"] = None
     return pase_entorno
+
+
+# ── Construcción REAL, sin mockear: los fallos que ningún test podía ver ─────────────────────
+
+
+@pytest.fixture()
+def pase_construccion_real(monkeypatch):
+    """Todo bien configurado, pero construyendo y firmando DE VERDAD. Solo el envío está
+    intervenido."""
+    return _crear_pase_entorno(monkeypatch, construccion_real=True)
+
+
+@pytest.fixture()
+def pase_mint_malo(monkeypatch):
+    """El `cc_usdc_mint` mal escrito, construyendo de verdad: `Pubkey.from_string` levanta
+    `ValueError` DENTRO de `build_token_transfer`, antes de firmar y de enviar nada."""
+    return _crear_pase_entorno(monkeypatch, construccion_real=True, cc_usdc_mint="no-es-un-mint")
+
+
+@pytest.fixture()
+def pase_operador_mal_escrito(monkeypatch):
+    """La dirección del OPERADOR con un typo (le falta un carácter), construyendo de verdad.
+
+    La wallet de DESTINO se configura aparte y bien, para que el 503 de configuración no tape el
+    caso: lo que revienta aquí es el `fee_payer` de la transacción, que el endpoint no valida y
+    que por tanto solo falla al construir — la trampa exacta de la ronda 3.
+    """
+    return _crear_pase_entorno(
+        monkeypatch, construccion_real=True,
+        fee_wallet_address="4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        operator_address="4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncD")

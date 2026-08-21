@@ -36,7 +36,7 @@ from .services.gacha import GachaService, GachaDisabled, GachaUpstreamError, tir
 from .services import pool_ingest, tracker_access, tracker_pass, winners_ingest, winners_store
 from .services.ev_view import fila_ev
 from .services.tier_gaps import rachas_por_tier
-from .services.privy_signer import PrivySigner, PrivyNoVerificable, PrivySignerError
+from .services.privy_signer import PrivySigner, PrivyNoVerificable
 from .services import escrow_pool, machine_visibility
 from .models import GachaPack, PackBattle, BattlePlayer, BattlePack, BattlePull, Tip, User, TrackerPass
 from .chat import (ConnectionManager, ChatBuffer, abbreviate, save_chat_message,
@@ -52,10 +52,11 @@ from .services.pack_orchestration import (
     usdc_balance_base_units, fetch_latest_blockhash,
     reconcile_voided_battle_live,
 )
-from .services.solana_tx import build_memo_tx, build_free_pack_proof_tx, confirmar_firma
+from .services.solana_tx import build_memo_tx, build_free_pack_proof_tx, confirmar_firma, leer_firma
 from solders.pubkey import Pubkey
-from solders.hash import ParseHashError
-from .services.royale_funding import royale_buyin, collect_buyin, distribute_usdc, refund_buyin, withdraw_usdc, withdraw_usdc_with_fee
+from .services.royale_funding import (royale_buyin, collect_buyin, construir_y_firmar_cobro,
+                                      enviar_cobro, distribute_usdc, refund_buyin, withdraw_usdc,
+                                      withdraw_usdc_with_fee)
 from .services.nft_transfer import submit_signed_tx, build_transfer, nft_in_owner, UnsupportedNftStandard
 from .services.reservations import (reserve, reserved_total, royale_locked_total,
                                      release_reservations, battle_in_progress, royale_in_progress)
@@ -268,6 +269,8 @@ def create_app(session_factory, chain: ChainSource,
                tracker_access_allowlist: set[str] | None = None,
                tracker_pass_7d_usdc: float = 0.0,
                tracker_pass_30d_usdc: float = 0.0,
+               tracker_pass_rate_limit: int = 5,
+               tracker_pass_rate_window_s: float = 60.0,
                referral_payout_wallet_id: str = "",
                referral_payout_address: str = "",
                referral_claim_min_base_units: int = 5_000_000) -> FastAPI:
@@ -1343,21 +1346,35 @@ def create_app(session_factory, chain: ChainSource,
         if avail < amount:
             raise HTTPException(402, "not enough available USDC")
 
-    # Una `pending` más vieja que esto ya no es "la petición en curso". El peor caso real: ~5 s
-    # pidiendo el blockhash + hasta 60 s firmando y enviando (dos firmas de Privy a 15 s cada una
-    # más el envío a 30 s, dentro de `collect_buyin`) + hasta 213 s en `confirmar_firma` con sus
+    # Una `pending` más vieja que esto ya no es "la petición en curso". El peor caso real que
+    # queda tras reordenar el endpoint: el envío (30 s) + hasta 213 s en `confirmar_firma` con sus
     # valores por defecto (10 intentos de hasta 20 s cada uno, más 9 esperas de 1.5 s entre
-    # ellos) — unos 278 s en total. 300 s deja un margen real sobre eso sin ser tan largo como
-    # para no servir de nada.
+    # ellos) — unos 243 s. Se deja en 300 s igualmente: sigue dando margen de sobra y bajarlo solo
+    # serviría para etiquetar de "atascada" alguna compra que iba lenta.
     _PENDING_ATASCADA_S = 300
 
-    # La autorreconciliación (punto 0 de abajo) llama a `confirmar_firma` con un presupuesto
+    # La autorreconciliación (punto 1 de abajo) llama a `confirmar_firma` con un presupuesto
     # CORTO a propósito: es una compra NUEVA la que está preguntando por una firma VIEJA, y no
     # tiene sentido que se quede colgada minutos —bloqueando una conexión— antes de poder decidir
     # su propio 409. Si en este presupuesto corto tampoco hay veredicto, la fila sigue `pending`
     # y la siguiente compra la vuelve a intentar.
     _RECONCILIACION_INTENTOS = 2
     _RECONCILIACION_ESPERA_S = 1.0
+
+    # Freno de peticiones de la compra del pase, con contadores PROPIOS (mismo motivo que los del
+    # tip y el withdraw: compartirlos haría que comprar un pase te dejara sin poder retirar). Este
+    # endpoint mueve USDC de verdad y además hace que el operador pague gas y, la primera vez, la
+    # renta de la ATA de destino, así que sin freno un bucle de reintentos —propio o ajeno— sale
+    # caro aunque cada intento acabe fallando.
+    _pase_hits: dict[str, list[float]] = {}
+
+    def _pase_throttle(wallet: str) -> None:
+        now = _time.time()
+        hits = [t for t in _pase_hits.get(wallet, []) if now - t < tracker_pass_rate_window_s]
+        if len(hits) >= tracker_pass_rate_limit:
+            raise HTTPException(429, "too many pass purchases, try again later")
+        hits.append(now)
+        _pase_hits[wallet] = hits
 
     @app.post("/gacha/tracker-pass")
     async def gacha_tracker_pass(body: TrackerPassBody,
@@ -1369,67 +1386,73 @@ def create_app(session_factory, chain: ChainSource,
         EL ORDEN ES LO IMPORTANTE, porque aquí se mueve dinero real de un usuario y las dos cosas
         que tienen que pasar (cobrar en la cadena, anotar en nuestra base) no pueden ser atómicas.
 
-          0. Que no haya YA una compra en curso de esta wallet (`pending`). Si la que hay tiene
-             firma, se intenta reconciliar sola (presupuesto corto, ver `_RECONCILIACION_*`
-             arriba) antes de rendirse: si se resuelve a `active`, ESTA petición devuelve ESE
-             pase y no cobra nada más — un reintento tras un 502 (la reacción normal ante un
-             error) no puede convertirse en una segunda compra. Ya NO es "sin red": puede tardar
-             hasta unos segundos preguntándole a la cadena.
-          1. Que la wallet de destino del cobro esté configurada. Es un problema NUESTRO, no del
-             jugador, así que se corta aquí con un 503 en vez de dejar que `collect_buyin`
-             reviente más abajo.
-          2. Saldo DISPONIBLE, que es el on-chain menos lo reservado. Sin esto, un pase podría
+          1. Que no haya YA una compra en curso de esta wallet (`pending`). La `pending` hace de
+             candado: mientras exista, esta wallet no puede comprar otra vez. Si tiene firma se
+             intenta reconciliar sola (presupuesto corto, ver `_RECONCILIACION_*` arriba) antes de
+             rendirse: si se resuelve a `active`, ESTA petición devuelve ESE pase y no cobra nada
+             más — un reintento tras un 502 (la reacción normal ante un error) no puede
+             convertirse en una segunda compra.
+          2. Que la wallet de destino del cobro esté configurada. Es un problema NUESTRO, no del
+             jugador, así que se corta con un 503 en vez de con un 502 que parecería un cobro
+             fallido.
+          3. Saldo DISPONIBLE, que es el on-chain menos lo reservado. Sin esto, un pase podría
              gastarse el dinero comprometido en una batalla y dejarla sin fondos al liquidar.
-          3. Fila en `pending`, que NO da acceso. Deja constancia de quién compra y cuánto antes
-             de tocar el dinero: si el proceso muere después, sabemos a quién mirar.
-          4. Cobro, y la firma se guarda EN CUANTO se conoce.
-          5. Confirmación de que llegó, y solo entonces `active`.
+          4. Pedir el blockhash, CONSTRUIR la transacción y FIRMARLA. Todavía no hay fila.
+          5. Leer la firma de la transacción ya firmada. En local, sin red.
+          6. Insertar la fila `pending` YA CON SU FIRMA, y commit.
+          7. ENVIAR.
+          8. Confirmar que llegó, y solo entonces `active`.
+
+        POR QUÉ FIRMAR VA ANTES DE ESCRIBIR LA FILA, que es lo que de verdad decide el diseño. La
+        fila `pending` hace dos trabajos a la vez: es el registro de auditoría (tiene que
+        SOBREVIVIR al fallo) y es el candado (tiene que LIBERARSE en todos los caminos de fallo).
+        Los dos trabajos son incompatibles en cuanto la fila existe antes de que exista dinero en
+        movimiento: cualquier excepción de la que no se sepa decir "esto no llegó a salir" deja la
+        fila puesta, y la wallet encerrada. Adivinarlo por el TIPO de la excepción falló tres
+        veces seguidas (el blockhash, la wallet de destino, y una dirección de operador o un mint
+        mal escritos), siempre igual: un fallo de CONFIGURACIÓN, que no depende de quién compra,
+        encerraba a TODAS las wallets en su primer intento.
+
+        Poniendo la fila DESPUÉS de firmar, esa familia entera de fallos deja de existir por
+        construcción, no por acertar con una lista de `except`: construir y firmar ocurren sin
+        fila, así que no hay nada que desbloquear — un 502 limpio y reintentable, y a otra cosa.
+
+        Y como la firma de una transacción de Solana viaja DENTRO de la propia transacción (no la
+        inventa el RPC; ver `leer_firma`), se puede anotar antes de enviar. Consecuencia directa:
+        TODA `pending` tiene firma. Ya no existe la `pending` sin firma, que era la única celda
+        que necesitaba ojos humanos y la única donde alguien podía quedarse cobrado sin recurso.
+        Toda `pending` es hoy autorreconciliable por el punto 1.
+
+        DÓNDE EMPIEZA LO INDETERMINADO. En el POST de `sendTransaction` (paso 7) y no antes: ahí
+        SÍ pudo haber salido aunque la respuesta que veamos sea un error de red. Todo lo anterior
+        —blockhash, construcción, firma— es reintentable sin consecuencias. Por eso la ventana en
+        la que el candado está tomado es solo el envío más la confirmación, no toda la petición.
 
         Al revés (activar y cobrar después) regala el acceso cuando el cobro falla, y ese fallo lo
         provoca cualquiera con la cuenta vacía.
 
-        DÓNDE EMPIEZA LO INDETERMINADO. Pedir el blockhash, y construir y firmar la transacción
-        (dentro de `collect_buyin`) todavía no han mandado nada a la red de Solana: si cualquiera
-        de esos pasos falla, no hay transacción que pueda haber salido, así que es tan determinado
-        como un rechazo — `failed`, reintentable. Lo indeterminado empieza en el POST de
-        `sendTransaction` (dentro de `submit_signed_tx`, la última llamada de `collect_buyin`):
-        ahí SÍ pudo haber salido aunque la respuesta que veamos sea un error de red.
-
         Qué significa cada estado final, para quien tenga que mirarlo a mano:
 
           · `active`: pase válido, fin de la historia.
-          · `failed`: RECHAZO. El RPC rechazó la transacción de forma explícita (`RuntimeError`
-            de `submit_signed_tx`), `sign_solana` falló antes de que hubiera nada que enviar
-            (`PrivySignerError`), el blockhash que devolvió el RPC no se pudo ni interpretar al
-            construir la transacción (`ParseHashError`), o la cadena la ejecutó y falló
-            (`confirmar_firma` viendo un `err`). El dinero no se movió — aunque "el RPC rechazó"
-            es el rechazo DE ESE nodo, no una garantía de red: un "blockhash not found" tras
-            reenviar no es lo mismo que una prueba matemática, es la mejor lectura que tenemos
-            con lo que el RPC nos dijo.
-          · `pending`: dos cosas MUY distintas comparten este estado, y en su mayoría solo el
-            tiempo las distingue (la compra siguiente de la misma wallet también lo intenta, ver
-            el punto 0 de arriba):
-              - Fresca (recién creada, hace segundos): normal, está a medio cobrar. Se resuelve
-                sola en el mismo request.
-              - Vieja SIN firma: el POST de `sendTransaction` nunca dio un veredicto (timeout,
-                5xx del proxy tras reenviar, un cuerpo sin `result`) y no sabemos ni si llegó a
-                salir. Es la única que de verdad necesita que la mire una persona — no hay firma
-                que reconciliar sola.
-              - Vieja CON firma: `confirmar_firma` agotó los reintentos sin ver ni confirmación ni
-                error. Cualquier compra siguiente de esa wallet la vuelve a preguntar sola (ver el
-                punto 0); si en algún momento la cadena da un veredicto, se resuelve sin que nadie
-                la mire. Solo sigue siendo un problema si el veredicto tarda más que la paciencia
-                del jugador.
-              Para encontrar las que de verdad llevan tiempo sin resolverse: `SELECT * FROM
-              tracker_passes WHERE status = 'pending' AND created_at < <ahora - unos minutos>`.
+          · `failed`: RECHAZO. El RPC rechazó el envío de forma explícita (`RuntimeError` de
+            `submit_signed_tx`) o la cadena la ejecutó y falló (`confirmar_firma` viendo un
+            `err`). El dinero no se movió — aunque "el RPC rechazó" es el rechazo DE ESE nodo, no
+            una garantía de red: es la mejor lectura que tenemos con lo que nos dijo.
+          · `pending`: una compra a medias, SIEMPRE con firma. Solo el tiempo distingue los dos
+            casos, y la compra siguiente de la misma wallet los resuelve igual (punto 1):
+              - Fresca (segundos): normal, está enviando o confirmando. Se resuelve sola en el
+                mismo request.
+              - Vieja: el envío no dio veredicto, o `confirmar_firma` agotó los reintentos sin ver
+                ni confirmación ni error. Cualquier compra siguiente de esa wallet vuelve a
+                preguntarle a la cadena por esa firma y la cierra sola en cuanto haya veredicto.
+                Solo sigue siendo un problema si el veredicto tarda más que la paciencia del
+                jugador; para encontrar esas: `SELECT * FROM tracker_passes WHERE status =
+                'pending' AND created_at < <ahora - unos minutos>`.
 
-        Queda un hueco: cobrado y confirmado, y morirse antes del paso 5. Por eso la firma se
-        guarda antes: un `pending` CON firma significa "se cobró y no se sabe si se activó" —ya no
-        "no se activó" a secas, porque `confirmar_firma` puede haber devuelto `None` en vez de
-        haberse caído la app— y es una consulta de una línea (o, mejor, la reconciliación
-        automática del punto 0) en vez de un arreglo a mano. No hay reversión automática de una
-        transferencia on-chain, y un camino de devolución que no se ejecuta casi nunca estaría
-        roto el día que hiciera falta.
+        Queda un hueco irreducible: cobrado y confirmado, y morirse antes del paso 8. La fila se
+        queda `pending` con su firma, y la reconciliación del punto 1 la cierra sola. No hay
+        reversión automática de una transferencia on-chain, y un camino de devolución que no se
+        ejecuta casi nunca estaría roto el día que hiciera falta.
         """
         if body.days not in tracker_pass.DIAS_VALIDOS:
             raise HTTPException(422, "invalid pass duration")
@@ -1437,6 +1460,11 @@ def create_app(session_factory, chain: ChainSource,
                                                 tracker_pass_30d_usdc)
         if precio is None:
             raise HTTPException(503, "tracker_pass_disabled")
+
+        # El freno va DESPUÉS de las dos comprobaciones de arriba (que no cuestan ni red ni base
+        # de datos, así que no hay nada que frenar) y ANTES de todo lo demás, que sí: la
+        # reconciliación pregunta a la cadena y el cobro mueve dinero.
+        _pase_throttle(wallet)
 
         # Comprobación barata antes de tocar la cadena. NO basta por sí sola contra dos peticiones
         # a la vez (es un check-then-act, y entre el SELECT y el INSERT cabe una carrera): la
@@ -1457,24 +1485,19 @@ def create_app(session_factory, chain: ChainSource,
                 # y NO seguir con la compra es lo que hace esto idempotente — sin esto, reintentar
                 # tras un 502 (la reacción normal ante un error) cobraría un SEGUNDO pase encima
                 # del primero, que sí se cobró.
-                ahora = datetime.now(timezone.utc)
-                fin = ya_pendiente.ends_at
-                if fin.tzinfo is None:
-                    fin = fin.replace(tzinfo=timezone.utc)
-                if fin < ahora:
-                    # El dinero se cobró de verdad, pero tarde: la ventana que se congeló al
-                    # crear la fila ya pasó entera mientras estaba indeterminada. Activarla tal
-                    # cual regalaría cero acceso por un pase que sí se pagó, así que se corre
-                    # para que empiece AHORA, respetando los días que se compraron.
-                    duracion = ya_pendiente.ends_at - ya_pendiente.starts_at
-                    ya_pendiente.starts_at = ahora
-                    ya_pendiente.ends_at = ahora + duracion
+                #
+                # Y la ventana se recalcula SIEMPRE, no solo si ya había caducado entera. Una fila
+                # `pending` NO da acceso (solo `active` lo da), así que todo el tiempo que estuvo
+                # indeterminada es tiempo que el jugador pagó y no pudo usar: dárselo por
+                # consumido sería cobrarle por nada. `periodo` devuelve exactamente lo que hay que
+                # poner —ahora, o el final del pase que ya esté vigente, para no solaparse con él—
+                # y en el caso normal (una `pending` de segundos) es un no-op de milisegundos.
+                desde_r, hasta_r = tracker_pass.periodo(s, wallet, ya_pendiente.days)
+                ya_pendiente.starts_at = desde_r
+                ya_pendiente.ends_at = hasta_r
                 ya_pendiente.status = "active"
                 s.commit()
-                hasta_reconciliada = ya_pendiente.ends_at
-                if hasta_reconciliada.tzinfo is None:
-                    hasta_reconciliada = hasta_reconciliada.replace(tzinfo=timezone.utc)
-                return {"pass_until": int(hasta_reconciliada.timestamp()),
+                return {"pass_until": int(hasta_r.timestamp()),
                        "days": ya_pendiente.days,
                        "price_usdc": ya_pendiente.price_base_units / 1_000_000}
             elif veredicto is False:
@@ -1489,15 +1512,10 @@ def create_app(session_factory, chain: ChainSource,
             raise HTTPException(409, "tracker_pass_pending_stuck" if atascada else "tracker_pass_pending")
 
         # La wallet de destino del cobro (fee_dest) es config, no algo que dependa del jugador.
-        # Vacía o mal escrita, `collect_buyin` reventaría con un `ValueError` de solders AL
-        # CONSTRUIR la transacción —antes de firmar o enviar nada— y ese `ValueError` caería en
-        # el `except Exception` genérico de más abajo, dejando la fila en `pending`: la wallet
-        # quedaría encerrada por el 409 del punto 0 de arriba, y como esto no depende de quién
-        # compra, encerraría a TODAS las wallets, en su primer intento, para siempre. Se valida
-        # aquí, antes de escribir nada, y con un 503 —problema nuestro— en vez de un 502 que
-        # parecería un cobro fallido. Va DESPUÉS de la reconciliación de arriba a propósito: una
-        # `pending` vieja que ya se cobró se puede reconciliar igual aunque esto esté roto ahora
-        # mismo, porque reconciliar no vuelve a tocar `fee_dest`.
+        # Ya no es esto lo que impide encerrar wallets —de eso se encarga el orden de abajo, que
+        # construye y firma antes de escribir nada—, pero sigue mereciendo la pena: un 503
+        # "tracker_pass_misconfigured" le dice a quien despliega dónde mirar, y un 502 "charge
+        # failed" le haría buscar en la cadena un cobro que nunca se intentó.
         fee_dest = fee_wallet_address or privy_operator_address
         try:
             if not fee_dest:
@@ -1508,65 +1526,65 @@ def create_app(session_factory, chain: ChainSource,
 
         await _require_available(wallet, precio, s)          # 402 si no llega. Nada escrito aún.
 
+        # ── DESDE AQUÍ HASTA EL `s.add(fila)` NO HAY FILA, Y ESO ES EL DISEÑO ────────────────
+        # Pedir el blockhash, construir la transacción y firmarla no mandan NADA a la red de
+        # Solana. Cualquier cosa que reviente aquí —el RPC caído, una dirección o un mint mal
+        # escritos en la configuración (`ValueError` de solders), un blockhash ininteligible
+        # (`ParseHashError`), Privy sin contestar (`PrivySignerError`), o cualquier otra— no ha
+        # difundido una transacción, así que no hay nada que reconciliar y no hace falta saber de
+        # qué tipo era: un solo `except Exception`, un 502, y el jugador puede reintentar de
+        # inmediato porque no ha quedado ninguna fila haciéndole de candado.
+        try:
+            blockhash = await fetch_latest_blockhash(solana_rpc_url)
+            firmada = await construir_y_firmar_cobro(privy_signer, wallet_id, wallet,
+                                                     privy_operator_wallet_id,
+                                                     privy_operator_address,
+                                                     fee_dest, cc_usdc_mint, precio, blockhash)
+            # La firma vive DENTRO de la transacción firmada: leerla no toca la red. Es lo que
+            # permite que la fila nazca ya con ella. Si Privy devolviera algo sin firmar,
+            # `leer_firma` levanta ValueError y caemos aquí mismo, sin fila y sin envío.
+            firma = leer_firma(firmada)
+        except Exception as e:
+            logger.warning("tracker-pass: no se pudo preparar el cobro de %s (nada enviado, "
+                           "sin fila): %s", wallet, e, exc_info=True)
+            raise HTTPException(502, "charge failed") from e
+
         desde, hasta = tracker_pass.periodo(s, wallet, body.days)
         fila = TrackerPass(id=str(uuid.uuid4()), wallet=wallet, days=body.days,
                            price_base_units=precio, status="pending",
-                           starts_at=desde, ends_at=hasta)
+                           tx_signature=firma, starts_at=desde, ends_at=hasta)
         s.add(fila)
         try:
             s.commit()
         except IntegrityError:
             # Perdió la carrera contra otra petición de la misma wallet que se coló entre el
-            # SELECT de arriba y este INSERT. El índice único es quien de verdad lo impide. Recién
-            # llegada por definición: nunca "atascada".
+            # SELECT de arriba y este INSERT. El índice único es quien de verdad lo impide. Lo que
+            # se tira es una transacción FIRMADA y NUNCA ENVIADA: no mueve dinero y caduca sola
+            # con su blockhash. Recién llegada por definición: nunca "atascada".
             s.rollback()
             raise HTTPException(409, "tracker_pass_pending")
 
-        # Pedir el blockhash es lo primero que toca la red, y todavía no se ha construido ni
-        # firmado nada: cualquier fallo aquí (timeout, 5xx, un cuerpo sin `result`) es DETERMINADO
-        # — no hay transacción que pueda haber salido. Por eso vive en su propio try/except que
-        # SIEMPRE cierra en `failed`, fuera del try de `collect_buyin` de abajo (que sí puede
-        # dejar la fila en `pending`). Mezclarlos fue la regresión de una ronda anterior: un RPC
-        # caído aquí dejaba la fila en `pending`, y la wallet quedaba encerrada por el 409 de
-        # arriba sin haber gastado un céntimo.
+        # A partir de aquí sí es irreversible: la transacción puede haber salido aunque veamos un
+        # error. La fila ya existe y ya tiene la firma, así que pase lo que pase hay algo concreto
+        # que mirar en un explorador y algo concreto que reconciliar.
         try:
-            blockhash = await fetch_latest_blockhash(solana_rpc_url)
-        except Exception as e:
+            await enviar_cobro(solana_rpc_url, firmada)
+        except RuntimeError as e:
+            # El RPC rechazó `sendTransaction` de forma explícita (`error` en la respuesta): dijo
+            # que NO la acepta, así que el dinero no se movió y la fila puede cerrarse en `failed`
+            # —lo que además libera el candado y deja reintentar al momento.
             fila.status = "failed"
             s.commit()
-            logger.warning("tracker-pass: no se pudo pedir el blockhash para %s: %s", wallet, e)
-            raise HTTPException(502, "charge failed") from e
-
-        try:
-            firma = await collect_buyin(solana_rpc_url, privy_signer, wallet_id, wallet,
-                                        privy_operator_wallet_id, privy_operator_address,
-                                        fee_dest, cc_usdc_mint, precio, blockhash)
-        except (RuntimeError, PrivySignerError, ParseHashError) as e:
-            # RuntimeError: el RPC rechazó `sendTransaction` de forma explícita. PrivySignerError:
-            # `sign_solana` falló ANTES de que hubiera nada que mandar a Solana. ParseHashError:
-            # el blockhash que devolvió el RPC no se pudo ni interpretar al CONSTRUIR la
-            # transacción, antes de firmar nada (`fee_dest` ya se validó arriba, así que esto solo
-            # puede venir del blockhash). Los tres son de ANTES o EN el rechazo, nunca de después
-            # de un envío que pueda haber aterrizado igual — por eso cierran en `failed`, no en
-            # `pending`.
-            fila.status = "failed"
-            s.commit()
-            logger.warning("tracker-pass: el cobro fue RECHAZADO para %s: %s", wallet, e)
+            logger.warning("tracker-pass: el envío fue RECHAZADO para %s: %s", wallet, e)
             raise HTTPException(502, "charge failed") from e
         except Exception as e:
-            # Cualquier OTRA cosa (un timeout del propio `sendTransaction`, un 5xx del proxy
-            # después de reenviar, un cuerpo sin `result`) es INDETERMINADA: pasó DESPUÉS del
-            # envío, así que la transacción puede haber salido igual. Activar sería regalar
-            # acceso; marcar `failed` sería mentir que el dinero no se movió cuando no lo sabemos.
-            # La fila se queda tal cual — `pending`, sin firma — para que la mire una persona: es
-            # el único caso que de verdad lo necesita (ver el punto 0 de arriba para el resto).
-            logger.critical("tracker-pass: cobro INDETERMINADO para %s, revisar a mano: %s",
-                            wallet, e, exc_info=True)
+            # Cualquier OTRA cosa (un timeout, un 5xx del proxy tras reenviar, un cuerpo sin
+            # `result`) es INDETERMINADA: pudo salir igual. Ni `active` (regalaría acceso) ni
+            # `failed` (mentiría que el dinero no se movió). Se queda `pending` CON su firma, que
+            # es justamente lo que la siguiente compra de esta wallet reconcilia sola.
+            logger.critical("tracker-pass: envío INDETERMINADO para %s, firma %s: %s",
+                            wallet, firma, e, exc_info=True)
             raise HTTPException(502, "charge failed") from e
-
-        # La firma ANTES que el estado, siempre. Es lo que hace reconciliable el hueco.
-        fila.tx_signature = firma
-        s.commit()
 
         resultado = await confirmar_firma(solana_rpc_url, firma)
         if resultado is False:
@@ -1578,15 +1596,16 @@ def create_app(session_factory, chain: ChainSource,
         if resultado is None:
             # Indeterminado: se agotaron los intentos sin ver ni confirmación ni error. La fila se
             # queda en `pending` CON firma — la próxima compra de esta wallet la reconcilia sola
-            # (punto 0 de arriba) en vez de necesitar que alguien la mire a mano.
-            logger.critical("tracker-pass: confirmación INDETERMINADA para %s, firma %s, "
-                            "revisar a mano", wallet, firma)
+            # (punto 1 de arriba) en vez de necesitar que alguien la mire a mano.
+            logger.critical("tracker-pass: confirmación INDETERMINADA para %s, firma %s",
+                            wallet, firma)
             raise HTTPException(502, "charge not confirmed")
 
         fila.status = "active"
         s.commit()
         return {"pass_until": int(hasta.timestamp()), "days": body.days,
                 "price_usdc": precio / 1_000_000}
+
     async def _machine_price(machine_code: str) -> int:
         """Precio como PUERTA: sobre el catálogo filtrado. Una máquina apagada a mano no puede
         estrenar partidas ni tiradas. Se apoya en el mismo 409 que ya usaba la indisponibilidad de
@@ -2938,7 +2957,9 @@ def build_default_app() -> FastAPI:
                       royale_creator_allowlist=s.royale_creator_allowlist_set,
                       tracker_access_allowlist=s.tracker_access_allowlist_set,
                       tracker_pass_7d_usdc=s.tracker_pass_7d_usdc,
-                      tracker_pass_30d_usdc=s.tracker_pass_30d_usdc)
+                      tracker_pass_30d_usdc=s.tracker_pass_30d_usdc,
+                      tracker_pass_rate_limit=s.tracker_pass_rate_limit,
+                      tracker_pass_rate_window_s=s.tracker_pass_rate_window_s)
 
 
 app = build_default_app()
