@@ -81,7 +81,7 @@ export function MachineTrackerPage() {
           es acusarle de algo que no es verdad. */}
       {acceso == null ? null : acceso.allowed
         ? <PanelEv token={identityToken} acceso={acceso} onSinAcceso={onSinAcceso} />
-        : <TrackerGate acceso={acceso} />}
+        : <TrackerGate acceso={acceso} token={identityToken} onComprado={onSinAcceso} />}
     </div>
   )
 }
@@ -95,12 +95,9 @@ export function MachineTrackerPage() {
  */
 function PanelEv({ token, acceso, onSinAcceso }: {
   token: string | null
-  // Todavía sin usar aquí: lo necesita la tarea que pinta cuándo caduca el pase junto al
-  // UPDATED/STALE de la cabecera, y `acceso` solo vive en el componente padre.
   acceso: TrackerAccess
   onSinAcceso: () => void
 }) {
-  void acceso
   const [filas, setFilas] = useState<EvRow[] | null>(null)
   const [fallo, setFallo] = useState(false)
   // Cuándo se calculó lo que se está viendo. Del carril LENTO: es de donde salen el edge y el
@@ -245,6 +242,14 @@ function PanelEv({ token, acceso, onSinAcceso }: {
         }}>
           {rancio ? 'STALE · ' : 'UPDATED '}{horaActualizacion(sello)}
         </span>
+        {/* Solo por esta vía caduca de verdad: si entró apostando o de casa, la puerta se vuelve
+            a abrir sola en cuanto deje de cumplir esa condición, no en una fecha fija. Quien
+            compró un pase sí tiene una fecha, y es la única con la que puede planear. */}
+        {acceso?.via === 'pass' && acceso.pass_until && (
+          <span style={{ fontFamily: FONTS.mono, fontSize: 10, color: COLORS.muted }}>
+            PASS UNTIL {new Date(acceso.pass_until * 1000).toLocaleDateString()}
+          </span>
+        )}
         {/* Las dos lecturas de la MISMA medición. Se ofrece elegir porque las dos son ciertas: el
             coleccionista se queda las cartas buenas y el que juega por valor las revende. Sin este
             interruptor habría que decidir por él y esconder la mitad de la verdad. */}

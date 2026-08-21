@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom'
 import { COLORS, FONTS, formatUsd } from '../../theme'
 import type { TrackerAccess } from '../../../onchain/gachaClient'
 import { FANTASMAS } from './trackerFantasmas'
+import { PassOffer } from './PassOffer'
 
 const VERDE = '#3ce8a8'
 const ROSA = '#ff2e7e'
@@ -20,7 +21,14 @@ const AMBAR = '#ffd166'
  *
  * NO se disfraza de error. No se ha roto nada y el jugador no ha hecho nada mal: le falta jugar.
  */
-export function TrackerGate({ acceso }: { acceso: TrackerAccess }) {
+export function TrackerGate({ acceso, token = null, onComprado = () => {} }: {
+  acceso: TrackerAccess
+  // Los dos con valor por defecto: los tests existentes de esta puerta la montan sin ellos, de
+  // antes de que se pudiera comprar el pase, y no tienen por qué saber de la compra para seguir
+  // probando lo que ya probaban. Sin token, `PassOffer` no se ofrece (hace falta para cobrar).
+  token?: string | null
+  onComprado?: () => void
+}) {
   const hecho = acceso.required_usd > 0
     ? Math.min(1, acceso.wagered_usd / acceso.required_usd)
     : 1
@@ -131,6 +139,11 @@ export function TrackerGate({ acceso }: { acceso: TrackerAccess }) {
           >
             Find a match →
           </Link>
+
+          {/* La compra va AQUÍ y no en un ajuste aparte: es el momento exacto en que alguien
+              siente que le falta la herramienta, justo tras leer cuánto le queda para entrar
+              jugando. Sin precios configurados no se pinta nada (ver `PassOffer`). */}
+          <PassOffer prices={acceso.pass_prices} token={token} onComprado={onComprado} />
 
           <div style={{
             marginTop: 14, paddingTop: 14, borderTop: '1px solid #ffffff14',
