@@ -29,13 +29,21 @@ export function MachineTrackerPage() {
   const { identityToken } = useIdentityToken()
   const [acceso, setAcceso] = useState<TrackerAccess | null>(null)
 
+  // Contador de peticiones: `identityToken` de Privy típicamente cambia dos veces al cargar (de
+  // nulo a token real), así que puede haber dos `fetchTrackerAccess` en vuelo a la vez. Sin esto,
+  // si la de SIN token (que responde `allowed: false`) tarda más que la de CON token, su `.then`
+  // llega el último y pisa el acceso bueno con la puerta cerrada. Con el contador, solo la
+  // respuesta de la petición MÁS RECIENTE puede tocar el estado; cualquier otra se descarta.
+  const ultimaPeticion = useRef(0)
   const pedirAcceso = useRef(() => {})
   pedirAcceso.current = () => {
+    const id = ++ultimaPeticion.current
     fetchTrackerAccess(identityToken)
-      .then((a) => setAcceso(a))
+      .then((a) => { if (ultimaPeticion.current === id) setAcceso(a) })
       // Si no se puede preguntar, NO se abre: una puerta que se cae abierta ante un fallo de red
       // no es una puerta. Se deja el aviso con lo que se sabe, que es nada.
       .catch(() => {
+        if (ultimaPeticion.current !== id) return
         setAcceso({ allowed: false, wagered_usd: 0, required_usd: 100,
                     missing_usd: 100, window_days: 7, via: null, pass_until: null, pass_prices: {} })
       })

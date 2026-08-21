@@ -163,3 +163,76 @@ describe('PanelEv · el orden propio y el refresco', () => {
     expect(enPantalla()).toEqual(['Anime Pop', 'Elite Pokémon'])
   })
 })
+
+describe('PanelEv · un 403 en cualquiera de los dos carriles lleva a la puerta', () => {
+  const accesoOk = { allowed: true, wagered_usd: 500, required_usd: 100, missing_usd: 0, window_days: 7 }
+  const accesoCerrado = { allowed: false, wagered_usd: 0, required_usd: 100, missing_usd: 100, window_days: 7 }
+  const error403 = () => Object.assign(new Error('tracker_locked'), { status: 403 })
+
+  /** El montaje SIEMPRE tiene que dar acceso (si no, no hay `PanelEv` con el que probar nada); solo
+   *  una llamada POSTERIOR a `fetchTrackerAccess` — la que dispara `onSinAcceso` — puede cerrar la
+   *  puerta. Contar llamadas en vez de encadenar `mockResolvedValueOnce` evita depender de CUÁNTAS
+   *  veces se llama antes de la que importa, que es justo lo que el mutante del test de control
+   *  pondría en duda. */
+  const accesoSegúnLlamada = () => {
+    let llamadas = 0
+    mocks.fetchAcceso.mockImplementation(() => {
+      llamadas += 1
+      return Promise.resolve({ ...(llamadas === 1 ? accesoOk : accesoCerrado) })
+    })
+  }
+
+  afterEach(() => {
+    // Este describe sustituye la respuesta por defecto de `fetchAcceso` por una que cuenta
+    // llamadas; se restaura al valor fijo del resto del fichero para no colarse en otro test.
+    mocks.fetchAcceso.mockReset()
+    mocks.fetchAcceso.mockResolvedValue({ allowed: true, wagered_usd: 500, required_usd: 100, missing_usd: 0, window_days: 7 })
+  })
+
+  it('el carril lento devuelve 403 → aparece la puerta, no el aviso de fallo', async () => {
+    accesoSegúnLlamada()
+    render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
+    await avanzar(0)
+    expect(screen.getByText('Elite Pokémon')).toBeTruthy()
+
+    mocks.fetchEv.mockRejectedValueOnce(error403())
+    await avanzar(60_000)
+    // Segundo tirón de reloj: el 403 dispara `onSinAcceso`, que hace un `fetchTrackerAccess`
+    // nuevo y ENCADENADO (no atado a ningún temporizador); con temporizadores falsos, `avanzar`
+    // solo garantiza vaciar lo que cuelga del tic que acaba de correr, así que este segundo
+    // `avanzar(0)` es el que vacía esa segunda promesa y deja pintada la puerta.
+    await avanzar(0)
+
+    expect(screen.getByText(/to go/i)).toBeTruthy()
+    expect(screen.queryByText(/Couldn't load the tracker/i)).toBeNull()
+  })
+
+  it('el carril rápido devuelve 403 → aparece la puerta, no el aviso de fallo', async () => {
+    accesoSegúnLlamada()
+    render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
+    await avanzar(0)
+    expect(screen.getByText('Elite Pokémon')).toBeTruthy()
+
+    mocks.fetchEvLive.mockRejectedValueOnce(error403())
+    await avanzar(10_000)
+    await avanzar(0) // ver el comentario del test del carril lento
+
+    expect(screen.getByText(/to go/i)).toBeTruthy()
+    expect(screen.queryByText(/Couldn't load the tracker/i)).toBeNull()
+  })
+
+  it('un fallo que NO es 403 en la primera carga enseña el aviso, no la puerta', async () => {
+    // Control: sin este test, los dos de arriba podrían pasar con un `catch` que mandara
+    // CUALQUIER error a la puerta, no solo el 403. Aquí un error de red de verdad en la
+    // PRIMERA carga tiene que dar el aviso de avería, y la puerta debe seguir cerrada... es
+    // decir, sin abrirse ni cerrarse: el acceso ya concedido no debe tocarse.
+    accesoSegúnLlamada()
+    mocks.fetchEv.mockRejectedValueOnce(new Error('sin red'))
+    render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
+    await avanzar(0)
+    await avanzar(0)
+
+    expect(screen.getByText(/Couldn't load the tracker/i)).toBeTruthy()
+    expect(screen.queryByText(/to go/i)).toBeNull()
+  })
+})
