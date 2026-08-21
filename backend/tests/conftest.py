@@ -1,11 +1,12 @@
 import json
 import time
 
+import httpx
 import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
 
 from app.chain.mock import MockChainSource
@@ -13,6 +14,7 @@ from app.db import make_engine, make_session_factory, init_db
 from app.main import create_app
 from app.privy import PrivyVerifier
 from app.services import tracker_pass
+from app.services.privy_signer import PrivySignerError
 from app.services.gacha import GachaService
 
 
@@ -132,7 +134,7 @@ def _crear_pase_entorno(monkeypatch, *, s7=10.0, s30=30.0):
     # cualquier otra = indeterminado); `confirma` guarda True/False/None (confirmada / rechazada
     # en cadena / indeterminada), calcando lo que devuelve `confirmar_firma` de verdad.
     mando = {"saldo": 1_000_000_000, "reservado": 0, "cobro": "FirmaFalsa", "confirma": True,
-             "acceso_al_cobrar": None}
+             "blockhash": "11111111111111111111111111111111", "acceso_al_cobrar": None}
 
     async def _saldo(*a, **k):
         return mando["saldo"]
@@ -141,7 +143,12 @@ def _crear_pase_entorno(monkeypatch, *, s7=10.0, s30=30.0):
         return mando["reservado"]
 
     async def _blockhash(*a, **k):
-        return "11111111111111111111111111111111"
+        # También tri-estado por el mismo motivo que `cobro`: pedir el blockhash es la PRIMERA
+        # llamada a la red del endpoint, y un fallo aquí es determinado (nada se ha construido ni
+        # firmado todavía) — ver `pase_blockhash_revienta`.
+        if isinstance(mando["blockhash"], Exception):
+            raise mando["blockhash"]
+        return mando["blockhash"]
 
     async def _cobro(*a, **k):
         # Fotografía del ACCESO —no de la columna `status`— en el instante en que se intenta el
@@ -221,17 +228,37 @@ def pase_saldo_reservado(pase_entorno):
 
 
 @pytest.fixture()
+def pase_blockhash_revienta(pase_entorno):
+    # Pedir el blockhash es lo PRIMERO que toca la red, antes de construir o firmar nada: un
+    # fallo aquí es determinado, no indeterminado, sin importar el tipo de excepción (a
+    # diferencia de lo que pasa dentro de `collect_buyin`, donde SÍ importa).
+    pase_entorno.mando["blockhash"] = httpx.ConnectError("el RPC no respondió")
+    return pase_entorno
+
+
+@pytest.fixture()
 def pase_cobro_revienta(pase_entorno):
-    # RuntimeError: el rechazo DEFINITIVO de `submit_signed_tx` (ver nft_transfer.py). El dinero
-    # no se movió, con certeza.
+    # RuntimeError: el RPC rechazó `sendTransaction` de forma explícita (ver nft_transfer.py). El
+    # dinero no se movió — un rechazo de ESE nodo, no una garantía absoluta de red, pero la mejor
+    # lectura que tenemos con lo que contestó.
     pase_entorno.mando["cobro"] = RuntimeError("sendTransaction failed")
     return pase_entorno
 
 
 @pytest.fixture()
+def pase_firma_rechazada(pase_entorno):
+    # PrivySignerError: `sign_solana` falló ANTES de que hubiera nada que mandar a Solana (ver
+    # privy_signer.py). Tan determinado como el RuntimeError de arriba: no llegó a firmarse, así
+    # que no pudo salir nada.
+    pase_entorno.mando["cobro"] = PrivySignerError("privy rpc unavailable")
+    return pase_entorno
+
+
+@pytest.fixture()
 def pase_cobro_indeterminado(pase_entorno):
-    # Cualquier excepción que NO sea RuntimeError: un timeout, un 5xx del proxy tras reenviar...
-    # No sabemos si la transacción llegó a salir de verdad.
+    # Cualquier excepción que NO sea RuntimeError/PrivySignerError: un timeout del propio
+    # `sendTransaction`, un 5xx del proxy tras reenviar... No sabemos si la transacción llegó a
+    # salir de verdad, porque pasó DESPUÉS del envío.
     pase_entorno.mando["cobro"] = TimeoutError("el RPC no respondió")
     return pase_entorno
 

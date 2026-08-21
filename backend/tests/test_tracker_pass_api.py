@@ -85,6 +85,38 @@ def test_un_cobro_INDETERMINADO_deja_la_fila_pending_sin_firma(pase_client, pase
         assert p.tx_signature is None, "nunca hubo firma: ni siquiera sabemos si se envió"
     acc = pase_client.get("/gacha/tracker-access", headers=pase_client.hdrs).json()
     assert acc["allowed"] is False
+    assert pase_client.mando["acceso_al_cobrar"] is False
+
+
+def test_un_fallo_al_pedir_el_blockhash_deja_FAILED_no_pending(pase_client, pase_blockhash_revienta):
+    # La regresión de la ronda anterior: pedir el blockhash es lo PRIMERO que toca la red, antes
+    # de construir o firmar nada. Un fallo aquí es tan determinado como un rechazo — nada se
+    # difundió — así que tiene que cerrar en `failed`, no dejar la fila en `pending` (que ahora
+    # bloquearía cualquier compra siguiente vía el 409 de la fila "en curso").
+    r = pase_client.post("/gacha/tracker-pass", json={"days": 7}, headers=pase_client.hdrs)
+    assert r.status_code == 502
+    with pase_client.session_factory() as s:
+        p = s.scalars(select(TrackerPass)).one()
+        assert p.status == "failed"
+        assert p.tx_signature is None
+    # collect_buyin ni se llega a invocar: el fallo fue antes de intentar cobrar.
+    assert pase_client.mando["acceso_al_cobrar"] is None
+
+    # Y el reintento funciona: arreglado el RPC, la wallet NO queda encerrada.
+    pase_client.mando["blockhash"] = "11111111111111111111111111111111"
+    r2 = pase_client.post("/gacha/tracker-pass", json={"days": 7}, headers=pase_client.hdrs)
+    assert r2.status_code == 200, r2.text
+
+
+def test_una_firma_RECHAZADA_por_privy_deja_FAILED_no_pending(pase_client, pase_firma_rechazada):
+    # PrivySignerError: `sign_solana` falló antes de que hubiera nada que mandar a Solana. Mismo
+    # razonamiento que el blockhash: nada se difundió, así que es determinado.
+    r = pase_client.post("/gacha/tracker-pass", json={"days": 7}, headers=pase_client.hdrs)
+    assert r.status_code == 502
+    with pase_client.session_factory() as s:
+        p = s.scalars(select(TrackerPass)).one()
+        assert p.status == "failed"
+        assert p.tx_signature is None
 
 
 def test_un_cobro_ENVIADO_pero_RECHAZADO_en_cadena_tampoco_da_acceso(pase_client,
@@ -113,6 +145,7 @@ def test_una_confirmacion_INDETERMINADA_deja_pending_con_firma(pase_client,
         assert p.tx_signature, "se sabe qué transacción mirar en un explorador"
     acc = pase_client.get("/gacha/tracker-access", headers=pase_client.hdrs).json()
     assert acc["allowed"] is False
+    assert pase_client.mando["acceso_al_cobrar"] is False
 
 
 def test_nadie_tiene_acceso_en_el_instante_del_cobro(pase_client, pase_cobro_ok):
@@ -215,3 +248,89 @@ def test_la_carrera_de_verdad_tambien_devuelve_409(pase_client, pase_cobro_ok, m
     assert r.json()["detail"] == "tracker_pass_pending"
     with pase_client.session_factory() as s:
         assert len(s.scalars(select(TrackerPass)).all()) == 1
+
+
+# ── B: una `pending` CON firma se reconcilia sola en la siguiente compra ────────────────────
+
+
+def test_una_pending_CON_firma_se_autorreconcilia_a_ACTIVA_y_el_usuario_sigue(pase_client,
+                                                                              pase_cobro_ok):
+    # `mando["confirma"]` por defecto es True: al preguntar otra vez, la cadena dice que sí se
+    # confirmó. La vieja se cierra sola en `active` y la compra de ESTE request sigue su camino
+    # sin que nadie tenga que mirarla a mano.
+    with pase_client.session_factory() as s:
+        s.add(_pending(tx_signature="FirmaVieja"))
+        s.commit()
+    r = pase_client.post("/gacha/tracker-pass", json={"days": 7}, headers=pase_client.hdrs)
+    assert r.status_code == 200, r.text
+    with pase_client.session_factory() as s:
+        filas = {p.id: p.status for p in s.scalars(select(TrackerPass)).all()}
+    assert filas["ya-en-curso"] == "active"    # la vieja, reconciliada sola
+    assert len(filas) == 2                     # + la fila de la compra de este request
+
+
+def test_una_pending_CON_firma_RECHAZADA_se_cierra_y_no_bloquea(pase_client, pase_cobro_sin_confirmar):
+    # `mando["confirma"]` es False: la cadena dice que se ejecutó y falló. La vieja se cierra
+    # sola en `failed` — sin firma que reconciliar más, sin acceso que regalar — y la compra de
+    # este request NO se bloquea con un 409 por su culpa (aunque, con este mismo `confirma`,
+    # termine fallando también, por su cuenta).
+    with pase_client.session_factory() as s:
+        s.add(_pending(tx_signature="FirmaVieja"))
+        s.commit()
+    r = pase_client.post("/gacha/tracker-pass", json={"days": 7}, headers=pase_client.hdrs)
+    assert r.status_code != 409, "la vieja se reconcilia sola: no debe bloquear la compra nueva"
+    with pase_client.session_factory() as s:
+        vieja = s.get(TrackerPass, "ya-en-curso")
+        assert vieja.status == "failed"
+
+
+def test_una_pending_CON_firma_que_SIGUE_indeterminada_no_se_resuelve(pase_client,
+                                                                      pase_confirmacion_indeterminada):
+    # `mando["confirma"]` sigue siendo None: preguntar otra vez no cambia nada, porque la cadena
+    # de verdad tampoco lo sabría todavía. Se queda `pending`, y el 409 sigue en pie — esto no se
+    # puede reconciliar solo, cada vez que se intenta.
+    with pase_client.session_factory() as s:
+        s.add(_pending(tx_signature="FirmaVieja"))
+        s.commit()
+    r = pase_client.post("/gacha/tracker-pass", json={"days": 7}, headers=pase_client.hdrs)
+    assert r.status_code == 409
+    with pase_client.session_factory() as s:
+        vieja = s.get(TrackerPass, "ya-en-curso")
+        assert vieja.status == "pending"
+
+
+def test_una_pending_SIN_firma_no_intenta_reconciliar(pase_client, pase_cobro_ok):
+    # Sin firma no hay nada que preguntarle a la cadena: `confirmar_firma` ni se llama. Esta es
+    # justo la única `pending` que de verdad necesita que la mire una persona.
+    with pase_client.session_factory() as s:
+        s.add(_pending())     # tx_signature=None por defecto
+        s.commit()
+    r = pase_client.post("/gacha/tracker-pass", json={"days": 7}, headers=pase_client.hdrs)
+    assert r.status_code == 409
+    with pase_client.session_factory() as s:
+        vieja = s.get(TrackerPass, "ya-en-curso")
+        assert vieja.status == "pending"
+
+
+# ── D: el 409 distingue "espera un momento" de "esto está atascado" ─────────────────────────
+
+
+def test_una_pending_RECIEN_creada_da_el_409_normal(pase_client, pase_cobro_ok):
+    with pase_client.session_factory() as s:
+        s.add(_pending())
+        s.commit()
+    r = pase_client.post("/gacha/tracker-pass", json={"days": 7}, headers=pase_client.hdrs)
+    assert r.status_code == 409
+    assert r.json()["detail"] == "tracker_pass_pending"
+
+
+def test_una_pending_VIEJA_da_un_409_distinto(pase_client, pase_cobro_ok):
+    # Ni el cobro más lento tarda minutos: pasado el umbral, "espera un momento" ya no es verdad,
+    # y el frontend necesita poder decir algo distinto ("esto está atascado, contacta soporte").
+    with pase_client.session_factory() as s:
+        vieja = datetime.now(timezone.utc) - timedelta(minutes=5)
+        s.add(_pending(created_at=vieja))
+        s.commit()
+    r = pase_client.post("/gacha/tracker-pass", json={"days": 7}, headers=pase_client.hdrs)
+    assert r.status_code == 409
+    assert r.json()["detail"] == "tracker_pass_pending_stuck"
