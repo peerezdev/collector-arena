@@ -78,6 +78,11 @@ _ENSURE_INDEXES = [
     # el de wallet, así que va aquí también. Único, igual que en el modelo.
     ("users", "ux_users_alias_lower",
      "CREATE UNIQUE INDEX IF NOT EXISTS ux_users_alias_lower ON users (lower(alias))"),
+    # La puerta de acceso del tracker busca "¿tiene esta wallet un pase activo que no haya
+    # caducado?" en cada carga. Sin este índice compuesto sería SCAN de tracker_passes entera.
+    ("tracker_passes", "ix_tracker_passes_wallet_status_ends",
+     "CREATE INDEX IF NOT EXISTS ix_tracker_passes_wallet_status_ends "
+     "ON tracker_passes (wallet, status, ends_at)"),
 ]
 
 

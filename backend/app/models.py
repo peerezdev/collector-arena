@@ -410,3 +410,28 @@ class GachaCoverage(Base):
     last_event_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     gaps: Mapped[Optional[str]] = mapped_column(String, nullable=True)   # JSON [[desde, hasta], …]
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class TrackerPass(Base):
+    """Un pase de pago del Machine Tracker.
+
+    La ÚNICA parte con estado del acceso al tracker. La ventana del wager se recalcula en cada
+    consulta y no guarda nada; ver `tracker_access`. Esa frontera importa: si un día el pase se
+    complica, el wager no se entera.
+
+    `status` va de `pending` a `active` o a `failed`, y SOLO `active` da acceso. Se inserta como
+    `pending` ANTES de cobrar, así que un fallo del cobro no regala nada.
+    """
+    __tablename__ = "tracker_passes"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    wallet: Mapped[str] = mapped_column(String, index=True)
+    days: Mapped[int] = mapped_column(Integer)
+    #: Lo cobrado, congelado. Si el precio cambia mañana, lo que se pagó no se reescribe.
+    price_base_units: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String, default="pending")
+    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    #: Se guarda EN CUANTO se conoce, antes de tocar `status`. Un `pending` con firma es la señal
+    #: inequívoca de "se cobró y no se activó", que es lo único que hace reconciliable ese hueco.
+    tx_signature: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
