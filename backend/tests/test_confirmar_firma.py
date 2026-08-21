@@ -3,6 +3,8 @@
 `submit_signed_tx` hace `sendTransaction` y devuelve la firma sin esperar nada. Activar un pase
 sobre eso regalaría el acceso cada vez que una transacción se cae después de enviarse.
 """
+import json
+
 import httpx
 import pytest
 
@@ -22,9 +24,24 @@ class _Resp:
         return self._cuerpo
 
 
-def _cliente(monkeypatch, respuestas):
-    """Sustituye `httpx.AsyncClient` por uno que devuelve, en cada `post`, el siguiente valor de
-    `respuestas` (agotada la lista, `None`: "todavía no lo sé"), y cuenta las llamadas."""
+class _RompeJSON(_Resp):
+    """200 con un cuerpo que NO es JSON: una pasarela degradada, un proxy que devuelve HTML o una
+    respuesta vacía bajo carga. `.json()` revienta con `json.JSONDecodeError`, que NO es subclase
+    de `httpx.HTTPError` — es justo el hueco que este test existe para cazar."""
+
+    def __init__(self):
+        super().__init__(None)
+
+    def json(self):
+        raise json.JSONDecodeError("no es JSON", "doc", 0)
+
+
+def _cliente(monkeypatch, eventos):
+    """Sustituye `httpx.AsyncClient` por uno que, en cada `post`, consume el siguiente elemento de
+    `eventos`: si es una excepción la lanza (fallo de red antes de recibir nada); si ya es una
+    `_Resp` la devuelve tal cual (para forzar cuerpos raros como `_RompeJSON`); si es cualquier
+    otra cosa (un dict o `None`) la envuelve como el `value` de `getSignatureStatuses`. Agotada la
+    lista, sigue devolviendo `None`: "todavía no lo sé". Cuenta las llamadas."""
     llamadas = {"n": 0}
 
     class _Cli:
@@ -36,8 +53,12 @@ def _cliente(monkeypatch, respuestas):
 
         async def post(self, url, json=None, timeout=None):
             llamadas["n"] += 1
-            valor = respuestas.pop(0) if respuestas else None
-            return _Resp({"jsonrpc": "2.0", "id": 1, "result": {"value": [valor]}})
+            evento = eventos.pop(0) if eventos else None
+            if isinstance(evento, Exception):
+                raise evento
+            if isinstance(evento, _Resp):
+                return evento
+            return _Resp({"jsonrpc": "2.0", "id": 1, "result": {"value": [evento]}})
 
     monkeypatch.setattr(httpx, "AsyncClient", _Cli)
     return llamadas
@@ -78,3 +99,35 @@ async def test_processed_no_basta(monkeypatch):
     # `processed` puede revertirse. Solo valen `confirmed` y `finalized`.
     _cliente(monkeypatch, [{"confirmationStatus": "processed", "err": None}] * 3)
     assert await confirmar_firma("http://rpc", "5xFirma", intentos=3, espera_s=0) is False
+
+
+# ── un fallo de red o un cuerpo raro no deben tumbar la petición del usuario ─────────────────
+#
+# Si `except httpx.HTTPError: continue` se cambiara por `except httpx.HTTPError: return True`,
+# ningún test de arriba lo notaría: ninguno hace que `post` falle. Son justo estos tres los que
+# demuestran que ese hueco es real y lo cierran.
+
+@pytest.mark.asyncio
+async def test_un_fallo_de_red_no_impide_confirmar_despues(monkeypatch):
+    # El primer intento no llega ni a tener respuesta; eso no debe impedir seguir probando.
+    llamadas = _cliente(monkeypatch, [httpx.ConnectError("caída"),
+                                      {"confirmationStatus": "confirmed", "err": None}])
+    assert await confirmar_firma("http://rpc", "5xFirma", intentos=5, espera_s=0) is True
+    assert llamadas["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_si_la_red_falla_siempre_devuelve_false_y_no_revienta(monkeypatch):
+    llamadas = _cliente(monkeypatch, [httpx.ConnectError("caída")] * 10)
+    assert await confirmar_firma("http://rpc", "5xFirma", intentos=3, espera_s=0) is False
+    assert llamadas["n"] == 3
+
+
+@pytest.mark.asyncio
+async def test_un_cuerpo_que_no_es_json_no_revienta(monkeypatch):
+    # Antes esto dejaba escapar `json.JSONDecodeError`, que no es `httpx.HTTPError`: la petición
+    # del usuario reventaba en vez de simplemente reintentar.
+    llamadas = _cliente(monkeypatch, [_RompeJSON(),
+                                      {"confirmationStatus": "confirmed", "err": None}])
+    assert await confirmar_firma("http://rpc", "5xFirma", intentos=5, espera_s=0) is True
+    assert llamadas["n"] == 2

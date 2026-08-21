@@ -11,6 +11,7 @@ Compressed NFTs (cNFT / Bubblegum + DAS) are out of scope and need a different p
 
 import asyncio
 import base64
+import json
 import httpx
 from solders.pubkey import Pubkey
 from solders.hash import Hash
@@ -264,6 +265,10 @@ async def confirmar_firma(rpc_url: str, firma: str, *, intentos: int = 10,
 
     Un fallo de red se trata como "todavía no", nunca como confirmada. Ante la duda, no se activa
     el pase: el jugador reintenta, que es recuperable, en vez de que nosotros regalemos acceso.
+
+    Un cuerpo que no es JSON (200 con HTML de un proxy caído, respuesta vacía bajo carga...)
+    cuenta como el mismo "todavía no": `r.json()` puede lanzar `json.JSONDecodeError`, que NO es
+    subclase de `httpx.HTTPError`, así que hay que capturarla aparte para no dejarla escapar.
     """
     for intento in range(intentos):
         if intento:
@@ -276,7 +281,7 @@ async def confirmar_firma(rpc_url: str, firma: str, *, intentos: int = 10,
                                  timeout=20)
                 r.raise_for_status()
                 d = r.json()
-        except httpx.HTTPError:
+        except (httpx.HTTPError, json.JSONDecodeError):
             continue
         valor = ((d.get("result") or {}).get("value") or [None])[0]
         if not valor:
