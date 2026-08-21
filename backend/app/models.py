@@ -431,7 +431,10 @@ class TrackerPass(Base):
     status: Mapped[str] = mapped_column(String, default="pending")
     starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    #: Se guarda EN CUANTO se conoce, antes de tocar `status`. Un `pending` con firma es la señal
-    #: inequívoca de "se cobró y no se activó", que es lo único que hace reconciliable ese hueco.
+    #: Se guarda EN CUANTO se conoce, antes de tocar `status`. Un `pending` con firma significa
+    #: "se cobró y no se sabe si se activó" —no "no se activó" a secas: `confirmar_firma` puede
+    #: devolver `None` en vez de un veredicto— y es lo que hace ese hueco reconciliable: la
+    #: siguiente compra de la misma wallet vuelve a preguntar sola antes de rendirse (ver
+    #: `gacha_tracker_pass` en app/main.py).
     tx_signature: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

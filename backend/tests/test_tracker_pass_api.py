@@ -119,6 +119,18 @@ def test_una_firma_RECHAZADA_por_privy_deja_FAILED_no_pending(pase_client, pase_
         assert p.tx_signature is None
 
 
+def test_un_blockhash_MALFORMADO_deja_FAILED_no_pending(pase_client, pase_blockhash_malformado):
+    # ParseHashError: el blockhash que devolvió el RPC no se pudo ni interpretar al CONSTRUIR la
+    # transacción, antes de firmar nada (H, ronda 3). Mismo razonamiento que los otros dos:
+    # nada se difundió, así que es determinado, no una excusa para encerrar la wallet en pending.
+    r = pase_client.post("/gacha/tracker-pass", json={"days": 7}, headers=pase_client.hdrs)
+    assert r.status_code == 502
+    with pase_client.session_factory() as s:
+        p = s.scalars(select(TrackerPass)).one()
+        assert p.status == "failed"
+        assert p.tx_signature is None
+
+
 def test_un_cobro_ENVIADO_pero_RECHAZADO_en_cadena_tampoco_da_acceso(pase_client,
                                                                      pase_cobro_sin_confirmar):
     # confirmar_firma devuelve False: la cadena la ejecutó y la RECHAZÓ (`err` presente). Rechazo
@@ -253,20 +265,25 @@ def test_la_carrera_de_verdad_tambien_devuelve_409(pase_client, pase_cobro_ok, m
 # ── B: una `pending` CON firma se reconcilia sola en la siguiente compra ────────────────────
 
 
-def test_una_pending_CON_firma_se_autorreconcilia_a_ACTIVA_y_el_usuario_sigue(pase_client,
-                                                                              pase_cobro_ok):
-    # `mando["confirma"]` por defecto es True: al preguntar otra vez, la cadena dice que sí se
-    # confirmó. La vieja se cierra sola en `active` y la compra de ESTE request sigue su camino
-    # sin que nadie tenga que mirarla a mano.
+def test_una_pending_CON_firma_se_autorreconcilia_a_ACTIVA_y_NO_cobra_otra_vez(pase_client,
+                                                                                pase_cobro_ok):
+    # G (ronda 3): esto ANTES afirmaba dos filas y un cobro nuevo. Era el bug — el jugador que ve
+    # un 502 y reintenta (la reacción normal ante un error) pagaba un SEGUNDO pase encima del
+    # primero, que sí se había cobrado. `mando["confirma"]` por defecto es True: al preguntar otra
+    # vez, la cadena dice que sí se confirmó, así que la vieja se cierra sola en `active` y ESTA
+    # petición devuelve ESE pase, sin cobrar nada más.
     with pase_client.session_factory() as s:
         s.add(_pending(tx_signature="FirmaVieja"))
         s.commit()
     r = pase_client.post("/gacha/tracker-pass", json={"days": 7}, headers=pase_client.hdrs)
     assert r.status_code == 200, r.text
+    assert r.json()["days"] == 7
+    assert r.json()["price_usdc"] == 10.0
     with pase_client.session_factory() as s:
         filas = {p.id: p.status for p in s.scalars(select(TrackerPass)).all()}
-    assert filas["ya-en-curso"] == "active"    # la vieja, reconciliada sola
-    assert len(filas) == 2                     # + la fila de la compra de este request
+    assert filas == {"ya-en-curso": "active"}, "una sola fila: la vieja, reconciliada"
+    # collect_buyin ni se llega a invocar: nada de cobro nuevo.
+    assert pase_client.mando["acceso_al_cobrar"] is None
 
 
 def test_una_pending_CON_firma_RECHAZADA_se_cierra_y_no_bloquea(pase_client, pase_cobro_sin_confirmar):
@@ -325,12 +342,108 @@ def test_una_pending_RECIEN_creada_da_el_409_normal(pase_client, pase_cobro_ok):
 
 
 def test_una_pending_VIEJA_da_un_409_distinto(pase_client, pase_cobro_ok):
-    # Ni el cobro más lento tarda minutos: pasado el umbral, "espera un momento" ya no es verdad,
-    # y el frontend necesita poder decir algo distinto ("esto está atascado, contacta soporte").
+    # Ni el cobro más lento (~278 s en el peor caso, ver el comentario de _PENDING_ATASCADA_S en
+    # main.py) llega a esto: pasado el umbral, "espera un momento" ya no es verdad, y el frontend
+    # necesita poder decir algo distinto ("esto está atascado, contacta soporte"). 15 minutos deja
+    # margen de sobra sobre el umbral (300 s) sin acercarse al límite real, para que este test no
+    # dependa de lo rápido que corra la suite.
     with pase_client.session_factory() as s:
-        vieja = datetime.now(timezone.utc) - timedelta(minutes=5)
+        vieja = datetime.now(timezone.utc) - timedelta(minutes=15)
         s.add(_pending(created_at=vieja))
         s.commit()
     r = pase_client.post("/gacha/tracker-pass", json={"days": 7}, headers=pase_client.hdrs)
     assert r.status_code == 409
     assert r.json()["detail"] == "tracker_pass_pending_stuck"
+
+
+# ── H: la wallet de destino del cobro sin configurar es un problema NUESTRO ─────────────────
+
+
+def test_fee_dest_vacio_da_un_503_de_configuracion_y_no_deja_rastro(pase_fee_dest_vacio):
+    # Antes de H esto reventaba `collect_buyin` con un ValueError DE CONSTRUCCIÓN (antes de
+    # firmar o enviar nada), caía en el except genérico, y dejaba la fila en `pending` — que con
+    # el 409 de I1 encerraba a la wallet. Y como esto no depende de la wallet que compra, sino de
+    # la configuración del despliegue, encerraría a TODAS, en su primer intento, para siempre.
+    r = pase_fee_dest_vacio.post("/gacha/tracker-pass", json={"days": 7},
+                                 headers=pase_fee_dest_vacio.hdrs)
+    assert r.status_code == 503
+    assert r.json()["detail"] == "tracker_pass_misconfigured"
+    with pase_fee_dest_vacio.session_factory() as s:
+        assert s.scalars(select(TrackerPass)).all() == [], "nada se escribe: se corta antes"
+    assert pase_fee_dest_vacio.mando["acceso_al_cobrar"] is None, "collect_buyin ni se llama"
+
+
+# ── I: reconciliar una pending cuya ventana ya expiró ────────────────────────────────────────
+
+
+def test_reconciliar_una_ventana_YA_EXPIRADA_la_corre_a_partir_de_ahora(pase_client, pase_cobro_ok):
+    # Una `pending` de hace 8 días con ventana de 7: para cuando se reconcilia, `ends_at` ya
+    # quedó en el pasado. Activarla tal cual regalaría cero acceso por un pase que sí se cobró —
+    # así que se corre para que empiece AHORA, respetando los días comprados.
+    with pase_client.session_factory() as s:
+        hace_8_dias = datetime.now(timezone.utc) - timedelta(days=8)
+        s.add(_pending(tx_signature="FirmaVieja", starts_at=hace_8_dias,
+                       ends_at=hace_8_dias + timedelta(days=7)))
+        s.commit()
+    ahora = time.time()
+    r = pase_client.post("/gacha/tracker-pass", json={"days": 7}, headers=pase_client.hdrs)
+    assert r.status_code == 200, r.text
+    assert abs(r.json()["pass_until"] - (ahora + 7 * 86400)) < 5
+    with pase_client.session_factory() as s:
+        p = s.get(TrackerPass, "ya-en-curso")
+        assert p.status == "active"
+        fin = p.ends_at if p.ends_at.tzinfo else p.ends_at.replace(tzinfo=timezone.utc)
+        inicio = p.starts_at if p.starts_at.tzinfo else p.starts_at.replace(tzinfo=timezone.utc)
+        assert fin > datetime.now(timezone.utc), "ya no está expirada"
+        assert fin - inicio == timedelta(days=7), "se respetaron los días que se compraron"
+
+
+def test_reconciliar_una_ventana_TODAVIA_vigente_no_la_toca(pase_client, pase_cobro_ok):
+    # Si `ends_at` sigue en el futuro, correrla sería un regalo que nadie pidió: el jugador ya
+    # tiene acceso desde que se creó la fila, y mover la ventana solo confundiría cuándo caduca.
+    with pase_client.session_factory() as s:
+        hace_2_dias = datetime.now(timezone.utc) - timedelta(days=2)
+        fin_original = hace_2_dias + timedelta(days=7)
+        s.add(_pending(tx_signature="FirmaVieja", starts_at=hace_2_dias, ends_at=fin_original))
+        s.commit()
+    r = pase_client.post("/gacha/tracker-pass", json={"days": 7}, headers=pase_client.hdrs)
+    assert r.status_code == 200, r.text
+    assert abs(r.json()["pass_until"] - fin_original.timestamp()) < 5, "sin tocar"
+
+
+# ── K: la autorreconciliación no puede colgarse minutos ──────────────────────────────────────
+
+
+def test_la_reconciliacion_usa_un_presupuesto_corto_el_cobro_nuevo_no(pase_client, pase_cobro_ok):
+    # La llamada de la reconciliación (sobre la firma VIEJA) lleva `intentos`/`espera_s` cortos;
+    # la de confirmar el cobro que se acaba de hacer (sobre la firma NUEVA) no lleva nada, así
+    # que usa los valores por defecto de `confirmar_firma` — a una recién enviada sí hay que
+    # darle tiempo de verdad para asentarse.
+    with pase_client.session_factory() as s:
+        s.add(_pending(tx_signature="FirmaVieja"))
+        s.commit()
+    r = pase_client.post("/gacha/tracker-pass", json={"days": 7}, headers=pase_client.hdrs)
+    assert r.status_code == 200, r.text
+    llamadas = pase_client.mando["confirma_llamadas"]
+    assert len(llamadas) == 1, "solo la reconciliación: se resolvió a active y no cobró de nuevo"
+    reconciliacion = llamadas[0]
+    assert reconciliacion.get("intentos", 10) < 10
+    assert reconciliacion.get("espera_s", 1.5) <= 1.0
+
+
+# ── L: el umbral de "atascada" tiene que dejar margen real ──────────────────────────────────
+
+
+def test_una_pending_de_dos_minutos_NO_esta_atascada(pase_client, pase_cobro_ok):
+    # Con el umbral viejo (60 s, que solo contaba las esperas entre reintentos de
+    # confirmar_firma y se olvidaba de sus propios timeouts, del blockhash y de las firmas) esto
+    # se habría etiquetado "atascada" a pesar de estar cómodamente dentro de lo que puede tardar
+    # un cobro legítimo (~278 s en el peor caso real). Mandar a un jugador a soporte por una
+    # compra que solo va lenta es peor que no decir nada.
+    with pase_client.session_factory() as s:
+        vieja = datetime.now(timezone.utc) - timedelta(minutes=2)
+        s.add(_pending(created_at=vieja))
+        s.commit()
+    r = pase_client.post("/gacha/tracker-pass", json={"days": 7}, headers=pase_client.hdrs)
+    assert r.status_code == 409
+    assert r.json()["detail"] == "tracker_pass_pending"

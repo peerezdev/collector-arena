@@ -15,6 +15,7 @@ from app.main import create_app
 from app.privy import PrivyVerifier
 from app.services import tracker_pass
 from app.services.privy_signer import PrivySignerError
+from solders.hash import ParseHashError
 from app.services.gacha import GachaService
 
 
@@ -110,22 +111,27 @@ class _FirmanteFalso:
     enabled = True
 
 
-def _crear_pase_entorno(monkeypatch, *, s7=10.0, s30=30.0):
+def _crear_pase_entorno(monkeypatch, *, s7=10.0, s30=30.0, operator_address=None):
     """Construye la app de la compra del pase y le interviene el dinero. `s7`/`s30` son los
-    precios de 7 y 30 días en USDC; a 0.0 el pase queda APAGADO (ver `pase_precio_apagado`), que
-    es la única razón de que esto sea una función y no quede todo dentro de `pase_entorno`.
-    """
+    precios de 7 y 30 días en USDC; a 0.0 el pase queda APAGADO (ver `pase_precio_apagado`).
+    `operator_address` deja simular la wallet de destino del cobro sin configurar (H, ronda 3;
+    ver `pase_fee_dest_vacio`) — vacía por defecto sería "OpAddr", que ni siquiera es una wallet
+    válida y hacía que TODO se rechazara con el 503 nuevo de H, así que el valor por defecto aquí
+    es una dirección base58 real."""
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False},
                            poolclass=StaticPool)
     init_db(engine)
     sf = make_session_factory(engine)
     priv = make_es256()
+    if operator_address is None:
+        operator_address = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
     app = create_app(sf, MockChainSource(),
                      gacha=GachaService(base_url="https://dev-gacha.example.com", api_key=""),
                      privy=PrivyVerifier(app_id=TRACKER_PASS_APP_ID,
                                          key_resolver=lambda kid: priv.public_key()),
                      privy_signer=_FirmanteFalso(),
-                     privy_operator_wallet_id="op-id", privy_operator_address="OpAddr",
+                     privy_operator_wallet_id="op-id",
+                     privy_operator_address=operator_address,
                      solana_rpc_url="https://rpc.test",
                      tracker_pass_7d_usdc=s7, tracker_pass_30d_usdc=s30)
 
@@ -166,6 +172,11 @@ def _crear_pase_entorno(monkeypatch, *, s7=10.0, s30=30.0):
         return mando["cobro"]
 
     async def _confirma(*a, **k):
+        # Se registran los kwargs de cada llamada para poder distinguir (K, ronda 3) la
+        # reconciliación —que le pasa un presupuesto corto— de la confirmación del cobro nuevo
+        # —que usa los valores por defecto de verdad, porque ahí sí hace falta esperar a que una
+        # transacción recién enviada tenga tiempo de asentarse.
+        mando.setdefault("confirma_llamadas", []).append(dict(k))
         return mando["confirma"]
 
     monkeypatch.setattr("app.main.usdc_balance_base_units", _saldo)
@@ -201,6 +212,15 @@ def pase_precio_apagado(monkeypatch):
     `precio_base_units` trata 0 como interruptor, no como "gratis" (app/services/tracker_pass.py),
     así que con esto la compra no existe — 503, no 200 a coste cero."""
     return _crear_pase_entorno(monkeypatch, s7=0.0, s30=0.0)
+
+
+@pytest.fixture()
+def pase_fee_dest_vacio(monkeypatch):
+    """Misma app que `pase_entorno`, pero sin wallet de destino del cobro configurada (H, ronda
+    3): ni `fee_wallet_address` (que aquí siempre está vacía) ni `privy_operator_address` tienen
+    un valor. Antes de H, esto reventaba `collect_buyin` con un `ValueError` de solders AL
+    CONSTRUIR la transacción y encerraba la wallet en `pending` para siempre."""
+    return _crear_pase_entorno(monkeypatch, operator_address="")
 
 
 @pytest.fixture()
@@ -251,6 +271,15 @@ def pase_firma_rechazada(pase_entorno):
     # privy_signer.py). Tan determinado como el RuntimeError de arriba: no llegó a firmarse, así
     # que no pudo salir nada.
     pase_entorno.mando["cobro"] = PrivySignerError("privy rpc unavailable")
+    return pase_entorno
+
+
+@pytest.fixture()
+def pase_blockhash_malformado(pase_entorno):
+    # ParseHashError: el blockhash que devolvió el RPC no se pudo ni interpretar AL CONSTRUIR la
+    # transacción (dentro de `collect_buyin`, antes de firmar nada). Tan determinado como los
+    # otros dos: la construcción nunca llegó a producir nada que enviar.
+    pase_entorno.mando["cobro"] = ParseHashError("failed to decoded string to hash")
     return pase_entorno
 
 
