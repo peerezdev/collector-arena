@@ -42,8 +42,9 @@ def test_la_wallet_de_la_casa_entra_sin_apostar():
 def test_a_los_demas_la_puerta_les_sigue_pidiendo_los_100():
     client, priv = _cliente({CASA})
     r = client.get("/gacha/tracker-access", headers=privy_auth_headers(priv, APP_ID, CUALQUIERA))
-    assert r.json() == {"allowed": False, "wagered_usd": 0.0, "required_usd": 100.0,
-                        "missing_usd": 100.0, "window_days": 7}
+    assert r.json() == {"allowed": False, "via": None, "pass_until": None,
+                        "wagered_usd": 0.0, "required_usd": 100.0,
+                        "missing_usd": 100.0, "window_days": 7, "pass_prices": {}}
 
 
 def test_DECIR_que_eres_la_casa_no_sirve_de_nada():

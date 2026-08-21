@@ -31,7 +31,7 @@ from .services.matches import register_match, list_open, sync_match, MatchError
 from .services.referrals import apply_referral_code, ReferralError
 from .elo import gap_label
 from .services.gacha import GachaService, GachaDisabled, GachaUpstreamError, tiradas_gratis
-from .services import pool_ingest, tracker_access, winners_ingest, winners_store
+from .services import pool_ingest, tracker_access, tracker_pass, winners_ingest, winners_store
 from .services.ev_view import fila_ev
 from .services.tier_gaps import rachas_por_tier
 from .services.privy_signer import PrivySigner, PrivyNoVerificable
@@ -258,6 +258,8 @@ def create_app(session_factory, chain: ChainSource,
                winner_announce_mult: float = 4.0,
                royale_creator_allowlist: set[str] | None = None,
                tracker_access_allowlist: set[str] | None = None,
+               tracker_pass_7d_usdc: float = 0.0,
+               tracker_pass_30d_usdc: float = 0.0,
                referral_payout_wallet_id: str = "",
                referral_payout_address: str = "",
                referral_claim_min_base_units: int = 5_000_000) -> FastAPI:
@@ -1035,7 +1037,14 @@ def create_app(session_factory, chain: ChainSource,
                 # Un token caducado no es un error de esta pantalla: se trata como "sin sesión" y
                 # el aviso le dirá que entre.
                 wallet = None
-        return tracker_access.acceso(s, wallet, lista_blanca=_tracker_allow)
+        pase = tracker_pass.pase_vigente(s, wallet) if wallet else None
+        precios = {}
+        if tracker_pass.precio_base_units(7, tracker_pass_7d_usdc, tracker_pass_30d_usdc):
+            precios["7"] = tracker_pass_7d_usdc
+        if tracker_pass.precio_base_units(30, tracker_pass_7d_usdc, tracker_pass_30d_usdc):
+            precios["30"] = tracker_pass_30d_usdc
+        return tracker_access.acceso(s, wallet, lista_blanca=_tracker_allow,
+                                     pase_hasta=pase, precios=precios)
 
     @app.get("/gacha/ev/live")
     async def gacha_ev_live():
@@ -2675,7 +2684,9 @@ def build_default_app() -> FastAPI:
                       hit_announce_mult=s.hit_announce_mult,
                       winner_announce_mult=s.winner_announce_mult,
                       royale_creator_allowlist=s.royale_creator_allowlist_set,
-                      tracker_access_allowlist=s.tracker_access_allowlist_set)
+                      tracker_access_allowlist=s.tracker_access_allowlist_set,
+                      tracker_pass_7d_usdc=s.tracker_pass_7d_usdc,
+                      tracker_pass_30d_usdc=s.tracker_pass_30d_usdc)
 
 
 app = build_default_app()

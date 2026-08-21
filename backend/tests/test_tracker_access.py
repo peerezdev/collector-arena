@@ -194,3 +194,56 @@ class TestListaBlanca:
             r = acceso(s, YO, ahora=AHORA, lista_blanca={YO})
             assert r["allowed"] is True
             assert r["wagered_usd"] == 30.0
+
+
+class TestPase:
+    """El pase de pago, la segunda vía de acceso.
+
+    Se prueba pasando `pase_hasta` directamente: quién lo calcula (`tracker_pass.pase_vigente`)
+    ya tiene sus propios tests, y aquí solo importa qué hace la puerta con ese dato.
+    """
+
+    def test_un_pase_vigente_abre_la_puerta_sin_haber_apostado(self, Session):
+        with Session() as s:
+            r = acceso(s, YO, pase_hasta=AHORA + timedelta(days=3), ahora=AHORA)
+            assert r["allowed"] is True
+            assert r["via"] == "pass"
+            assert r["pass_until"] == int((AHORA + timedelta(days=3)).timestamp())
+
+    def test_el_pase_NO_falsea_lo_apostado(self, Session):
+        # Por lo mismo que no lo falsea la lista blanca: esa cifra también se enseña, y mentirla
+        # haría mentirosa a la pantalla entera.
+        with Session() as s:
+            r = acceso(s, YO, pase_hasta=AHORA + timedelta(days=3), ahora=AHORA)
+            assert r["wagered_usd"] == 0.0
+            assert r["missing_usd"] == 100.0
+
+    def test_sin_pase_y_sin_wager_sigue_cerrada(self, Session):
+        with Session() as s:
+            r = acceso(s, YO, pase_hasta=None, ahora=AHORA)
+            assert r["allowed"] is False
+            assert r["via"] is None
+
+    def test_el_orden_de_los_motivos_es_casa_pase_wager(self, Session):
+        # `via` tiene que decir el motivo REAL, del más fuerte al más débil, para poder explicarlo
+        # en pantalla y para poder depurar por qué alguien entra.
+        with Session() as s:
+            r = acceso(s, YO, pase_hasta=AHORA + timedelta(days=3), lista_blanca={YO}, ahora=AHORA)
+            assert r["via"] == "house"
+
+    def test_un_pase_caducado_no_abre_nada(self, Session):
+        # `pase_hasta` en el pasado lo resuelve `pase_vigente`, pero la puerta no puede fiarse.
+        with Session() as s:
+            r = acceso(s, YO, pase_hasta=AHORA - timedelta(seconds=1), ahora=AHORA)
+            assert r["allowed"] is False
+            assert r["via"] is None
+
+    def test_los_precios_viajan_en_la_respuesta_para_poder_pintarlos(self, Session):
+        with Session() as s:
+            r = acceso(s, YO, precios={"7": 10.0, "30": 30.0}, ahora=AHORA)
+            assert r["pass_prices"] == {"7": 10.0, "30": 30.0}
+
+    def test_sin_precios_configurados_el_bloque_de_compra_no_existe(self, Session):
+        # Diccionario vacío y no ceros: la pantalla no tiene que saber que cero significa apagado.
+        with Session() as s:
+            assert acceso(s, YO, ahora=AHORA)["pass_prices"] == {}

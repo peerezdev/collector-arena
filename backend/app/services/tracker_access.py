@@ -76,8 +76,10 @@ def wager_reciente_usd(session: Session, wallet: str, *, dias: int = VENTANA_DIA
 
 def acceso(session: Session, wallet: Optional[str], *, minimo_usd: float = MINIMO_USD,
            dias: int = VENTANA_DIAS, ahora: Optional[datetime] = None,
-           lista_blanca: Optional[set[str]] = None) -> dict:
-    """Si esa wallet puede ver el tracker, y cuánto le falta si no.
+           lista_blanca: Optional[set[str]] = None,
+           pase_hasta: Optional[datetime] = None,
+           precios: Optional[dict] = None) -> dict:
+    """Si esa wallet puede ver el tracker, cuánto le falta si no, y por qué motivo entra.
 
     Sin wallet no hay acceso, pero tampoco es un error: es alguien que no ha entrado, y lo que
     procede es enseñarle qué es esto y qué hace falta, no un 401.
@@ -98,19 +100,46 @@ def acceso(session: Session, wallet: Optional[str], *, minimo_usd: float = MINIM
         mayúsculas, y una comparación laxa dejaría entrar wallets que solo se PARECEN a la de
         la casa.
 
-    Estar en la lista abre la puerta pero NO falsea `wagered_usd`: se sigue diciendo lo que de
-    verdad se ha apostado, porque esa cifra también se enseña y mentirla haría mentirosa a la
-    pantalla entera.
+    `pase_hasta` es la tercera vía: quien compró un pase entra sin haber apostado nada, mientras
+    ese pase siga vigente. Lo resuelve `tracker_pass.pase_vigente`; aquí solo se confía en la
+    fecha si todavía es futura, porque la puerta no puede fiarse de un pase ya caducado.
+
+    Estar en la lista o tener pase abre la puerta pero NO falsea `wagered_usd`: se sigue diciendo
+    lo que de verdad se ha apostado, porque esa cifra también se enseña y mentirla haría
+    mentirosa a la pantalla entera.
+
+    `via` dice el motivo REAL por el que se entra, resuelto de más fuerte a más débil (casa, pase,
+    wager). Sin ese orden alguien con pase Y wager saldría como "wager", y nadie entendería por
+    qué sigue dentro el día que el wager se le salga de la ventana.
+
+    `precios` viaja tal cual en `pass_prices`, para que la pantalla pueda pintar el bloque de
+    compra sin conocer los settings del backend. Vacío y no con ceros: que la compra esté apagada
+    no es algo que la pantalla tenga que aprender a interpretar.
     """
     apostado = wager_reciente_usd(session, wallet, dias=dias, ahora=ahora) if wallet else 0.0
     # `wallet and` va delante a propósito: sin sesión no se compara contra la lista. Sin esa
     # guarda, un None convertiría la lista de la casa en el acceso de cualquiera.
     invitada = bool(wallet and lista_blanca and wallet in lista_blanca)
+
+    ahora_dt = ahora or datetime.now(timezone.utc)
+    con_pase = bool(pase_hasta and pase_hasta > ahora_dt)
+    por_wager = apostado >= minimo_usd
+
+    # De más fuerte a más débil, para que `via` diga el motivo REAL. Sin este orden, alguien con
+    # pase Y wager saldría como "wager" y nadie entendería por qué sigue dentro al caducar.
+    via = "house" if invitada else "pass" if con_pase else "wager" if por_wager else None
+
+    # Solo la casa vacía `missing_usd`: esa cuenta no necesita saber cuánto le falta por wager. Un
+    # pase no lo vacía porque sigue siendo información real: cuánto llevaría de wager si el pase
+    # no estuviera, que es lo que la pantalla puede querer seguir enseñando mientras dura.
     falta = 0.0 if invitada else max(0.0, minimo_usd - apostado)
     return {
-        "allowed": invitada or apostado >= minimo_usd,
+        "allowed": via is not None,
+        "via": via,
+        "pass_until": int(pase_hasta.timestamp()) if con_pase else None,
         "wagered_usd": round(apostado, 2),
         "required_usd": minimo_usd,
         "missing_usd": math.ceil(falta * 100) / 100,
         "window_days": dias,
+        "pass_prices": dict(precios or {}),
     }
