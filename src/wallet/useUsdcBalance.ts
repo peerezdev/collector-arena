@@ -12,6 +12,9 @@ import { config } from '../onchain/config'
 // cannot query token balances there at all. The backend has no Origin header and already
 // holds the per-network rpc_url + USDC mint, so it reads the balance reliably — identical
 // behavior on devnet and mainnet, and no RPC provider key exposed in the client.
+//
+// Se refresca cada 30s SOLO con la pestaña a la vista, y se refresca una vez al volver a ella.
+// El motivo está junto al código, abajo: cada consulta cuesta una llamada al RPC.
 
 export function useUsdcBalance(): { usdc: number | null; loading: boolean } {
   // Al soltar la congelación hay que repintar en cuanto se pueda: si no, el saldo real tardaría
@@ -66,12 +69,43 @@ export function useUsdcBalance(): { usdc: number | null; loading: boolean } {
       }
     }
 
+    // Solo se pregunta mientras la pestaña se VE. Cada consulta es una llamada al RPC por usuario
+    // conectado (la hace el backend en su nombre), así que una pestaña olvidada abierta toda la
+    // noche gastaba unas 2.880 sin que nadie mirara el saldo.
+    //
+    // Al volver se refresca ANTES de reanudar el ciclo. Sin eso, lo primero que vería quien vuelve
+    // sería el número congelado de hace horas, que es peor que no haber parado nunca.
+    //
+    // "Visible" no es "con el foco": dos ventanas lado a lado cuentan las dos como visibles, y es
+    // lo correcto, porque se están viendo.
+    const isVisible = () => typeof document === 'undefined' || document.visibilityState !== 'hidden'
+
+    const startPolling = () => {
+      if (intervalId === null) intervalId = setInterval(fetchBalance, 30_000)
+    }
+    const stopPolling = () => {
+      if (intervalId !== null) {
+        clearInterval(intervalId)
+        intervalId = null
+      }
+    }
+    const onVisibilityChange = () => {
+      if (isVisible()) {
+        fetchBalance()
+        startPolling()
+      } else {
+        stopPolling()
+      }
+    }
+
     setLoading(true)
     fetchBalance()
-    intervalId = setInterval(fetchBalance, 30_000)
+    if (isVisible()) startPolling()
+    document.addEventListener('visibilitychange', onVisibilityChange)
 
     return () => {
-      if (intervalId !== null) clearInterval(intervalId)
+      stopPolling()
+      document.removeEventListener('visibilitychange', onVisibilityChange)
     }
   }, [identityToken, held])
 
