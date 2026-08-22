@@ -281,7 +281,7 @@ def leer_firma(signed_tx_b64: str) -> str:
 
 
 async def confirmar_firma(rpc_url: str, firma: str, *, intentos: int = 10,
-                          espera_s: float = 1.5) -> Optional[bool]:
+                          espera_s: float = 1.5, timeout_s: float = 20.0) -> Optional[bool]:
     """Si esa transacción llegó a la cadena y salió BIEN. Tri-estado, no booleano.
 
     Existe porque `submit_signed_tx` solo envía: devuelve la firma sin esperar nada. Dar por
@@ -310,6 +310,11 @@ async def confirmar_firma(rpc_url: str, firma: str, *, intentos: int = 10,
         cuenta como el mismo "todavía no lo sé": `r.json()` puede lanzar `json.JSONDecodeError`,
         que NO es subclase de `httpx.HTTPError`, así que hay que capturarla aparte para no
         dejarla escapar.
+
+    `intentos` / `espera_s` / `timeout_s` son ajustables porque quien llama sabe mejor que esta
+    función cuánto presupuesto total puede permitirse: una petición HTTP normal (sin proxy que
+    aguante minutos delante) necesita un total mucho más corto que confirmar con calma una
+    reconciliación en segundo plano.
     """
     for intento in range(intentos):
         if intento:
@@ -319,7 +324,7 @@ async def confirmar_firma(rpc_url: str, firma: str, *, intentos: int = 10,
                 r = await c.post(rpc_url, json={"jsonrpc": "2.0", "id": 1,
                                                 "method": "getSignatureStatuses",
                                                 "params": [[firma], {"searchTransactionHistory": True}]},
-                                 timeout=20)
+                                 timeout=timeout_s)
                 r.raise_for_status()
                 d = r.json()
         except (httpx.HTTPError, json.JSONDecodeError):

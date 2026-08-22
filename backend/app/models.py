@@ -420,7 +420,8 @@ class TrackerPass(Base):
     complica, el wager no se entera.
 
     `status` va de `pending` a `active` o a `failed`, y SOLO `active` da acceso. Se inserta como
-    `pending` ANTES de cobrar, así que un fallo del cobro no regala nada.
+    `pending` ANTES de enviar el cobro a la cadena, y YA CON su firma (ver `tx_signature`), así
+    que un fallo del envío no regala acceso y además deja algo concreto que reconciliar.
     """
     __tablename__ = "tracker_passes"
     id: Mapped[str] = mapped_column(String, primary_key=True)
@@ -431,10 +432,12 @@ class TrackerPass(Base):
     status: Mapped[str] = mapped_column(String, default="pending")
     starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    #: Se guarda EN CUANTO se conoce, antes de tocar `status`. Un `pending` con firma significa
-    #: "se cobró y no se sabe si se activó" —no "no se activó" a secas: `confirmar_firma` puede
-    #: devolver `None` en vez de un veredicto— y es lo que hace ese hueco reconciliable: la
-    #: siguiente compra de la misma wallet vuelve a preguntar sola antes de rendirse (ver
-    #: `gacha_tracker_pass` en app/main.py).
+    #: La fila NACE con esta columna ya rellena, no al revés. La firma de una transacción de
+    #: Solana viaja DENTRO de la propia transacción ya firmada (no la inventa el RPC), así que se
+    #: lee en local y se inserta la fila `pending` con ella ANTES de enviar nada: nunca existe un
+    #: `pending` sin firma. Un `pending` con firma significa "se cobró y no se sabe si se activó"
+    #: —no "no se activó" a secas: `confirmar_firma` puede devolver `None` en vez de un
+    #: veredicto— y es lo que hace ese hueco reconciliable: la siguiente compra de la misma
+    #: wallet vuelve a preguntar sola antes de rendirse (ver `gacha_tracker_pass` en app/main.py).
     tx_signature: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

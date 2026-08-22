@@ -60,6 +60,24 @@ describe('la compra del pase, dentro de la puerta', () => {
     await act(async () => { resolver({ pass_until: 1, days: 7, price_usdc: 10 }) })
   })
 
+  it('tras cobrar con éxito, pulsar otra vez mientras la puerta sigue montada NO cobra dos veces', async () => {
+    // El caso real: `onComprado()` (asíncrono, sin esperar aquí) sigue viajando hacia el padre,
+    // que es quien de verdad desmonta la puerta. Este test deja la puerta montada A PROPÓSITO
+    // tras el éxito, que es justo el hueco que antes dejaba pulsar dos veces y pagar dos pases:
+    // el `finally` reactivaba los botones en cuanto `buyTrackerPass` resolvía, sin esperar a que
+    // `onComprado()` terminase.
+    mocks.comprar.mockResolvedValueOnce({ pass_until: 1, days: 7, price_usdc: 10 })
+    const onComprado = vi.fn()
+    render(<PassOffer prices={{ '7': 10, '30': 30 }} token="t" onComprado={onComprado} />)
+    const boton = screen.getByRole('button', { name: /7 days/i })
+    fireEvent.click(boton)
+    await waitFor(() => expect(onComprado).toHaveBeenCalledTimes(1))
+    // La puerta sigue montada (nadie la desmontó): un segundo y tercer clic no deben cobrar más.
+    fireEvent.click(boton)
+    fireEvent.click(boton)
+    expect(mocks.comprar).toHaveBeenCalledTimes(1)
+  })
+
   it('sin saldo lo dice con lo que hay que hacer, no con un error genérico', async () => {
     mocks.comprar.mockRejectedValueOnce({ status: 402 })
     render(<PassOffer prices={{ '7': 10, '30': 30 }} token="t" onComprado={() => {}} />)

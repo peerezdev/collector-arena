@@ -285,8 +285,8 @@ export interface TrackerAccess {
   missing_usd: number
   window_days: number
   /** Por dónde tiene acceso ahora mismo: apostando, con un pase comprado, o de casa. `null` si no
-   *  tiene acceso por ninguna vía. Todavía sin usar en esta pantalla: lo trae ya la tarea que pinta
-   *  cuándo caduca el pase junto al UPDATED/STALE de la cabecera. */
+   *  tiene acceso por ninguna vía. `MachineTrackerPage` lo usa (`acceso?.via === 'pass'`) para
+   *  pintar cuándo caduca el pase junto al UPDATED/STALE de la cabecera. */
   via: 'wager' | 'pass' | 'house' | null
   /** Epoch en segundos hasta el que el pase comprado sigue valiendo, o `null` si no tiene uno. */
   pass_until: number | null
@@ -310,8 +310,10 @@ export function fetchEvLive(token?: string | null): Promise<{ rows: EvLive[]; up
   return gachaFetch('/gacha/ev/live', token ? { headers: { Authorization: `Bearer ${token}` } } : undefined)
 }
 
-/** Conserva la firma existente en cuanto al parámetro `hours`, para no romper a quien ya la llama
- *  sin pensar en el token (por ejemplo, el replay público). */
+/** Conserva la firma existente en cuanto al parámetro `hours`, con `token` añadido al final: el
+ *  único llamador de producción (`MachineTrackerPage`) ya manda token, así que esto no es por
+ *  ningún caso sin él, sino para no forzar a cambiar de golpe el orden de los parámetros en los
+ *  tests que ya llamaban a esta función. */
 export function fetchEvRows(hours?: number, token?: string | null): Promise<{ rows: EvRow[]; updated_at: number }> {
   const q = hours ? `?hours=${hours}` : ''
   return gachaFetch(`/gacha/ev${q}`, token ? { headers: { Authorization: `Bearer ${token}` } } : undefined)

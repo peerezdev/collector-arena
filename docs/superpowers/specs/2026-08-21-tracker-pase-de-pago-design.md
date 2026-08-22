@@ -126,7 +126,20 @@ Tabla nueva `tracker_passes`. Es la **única** parte con estado; el cálculo del
 
 ### Orden del cobro, que es lo delicado
 
-Aquí se mueve dinero real de un usuario. El orden es:
+> **NOTA (post-implementación, ronda 4): este orden no es el que corre en producción.** Lo que
+> sigue es el diseño ORIGINAL. Tres rondas de revisión seguidas encontraron el MISMO defecto con
+> la fila `pending` insertada ANTES de cobrar (paso 1 de abajo): una excepción mal clasificada —un
+> blockhash raro, una wallet de destino mal escrita, un operador o un mint mal configurados—
+> dejaba la fila puesta sin que nada se hubiera cobrado todavía, y el candado de esa `pending`
+> encerraba a la wallet; cuando el fallo era de configuración (no de quién compraba), encerraba a
+> TODAS. El orden final invierte los pasos 1 y 2: se construye, se firma, se LEE la firma de la
+> transacción ya firmada (viaja dentro de ella, no la inventa el RPC) y la fila se inserta YA CON
+> esa firma, justo antes de enviar. Todo lo anterior al envío queda así fuera de la fila: no hay
+> nada que desbloquear si revienta, así que esa familia entera de fallos deja de existir por
+> construcción en vez de por acertar con una lista de `except`. Ver `backend/app/main.py`,
+> docstring de `gacha_tracker_pass`, para el orden real y por qué.
+
+Aquí se mueve dinero real de un usuario. El orden es (diseño original, ver nota de arriba):
 
 0. **Se comprueba el saldo DISPONIBLE antes de tocar nada**, y disponible significa el USDC
    on-chain **menos `reserved_total`**. Es la parte que no se puede saltar: si un jugador tiene

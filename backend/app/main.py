@@ -1379,12 +1379,13 @@ def create_app(session_factory, chain: ChainSource,
         if avail < amount:
             raise HTTPException(402, "not enough available USDC")
 
-    # Una `pending` más vieja que esto ya no es "la petición en curso". El peor caso real que
-    # queda tras reordenar el endpoint: el envío (30 s) + hasta 213 s en `confirmar_firma` con sus
-    # valores por defecto (10 intentos de hasta 20 s cada uno, más 9 esperas de 1.5 s entre
-    # ellos) — unos 243 s. Se deja en 300 s igualmente: sigue dando margen de sobra y bajarlo solo
-    # serviría para etiquetar de "atascada" alguna compra que iba lenta.
-    _PENDING_ATASCADA_S = 300
+    # Una `pending` más vieja que esto ya no es "la petición en curso". El peor caso real de la
+    # ruta de compra nueva: el envío (30 s, timeout de `submit_signed_tx`) + hasta 19 s en
+    # `confirmar_firma` con el presupuesto corto de `_CONFIRMACION_*` de abajo (4 intentos de 4 s
+    # cada uno, más 3 esperas de 1 s entre ellos) — unos 49 s. Se deja en 180 s igualmente: sigue
+    # dando margen de sobra (más de 3x) y bajarlo más solo serviría para etiquetar de "atascada"
+    # alguna compra que iba lenta.
+    _PENDING_ATASCADA_S = 180
 
     # La autorreconciliación (punto 1 de abajo) llama a `confirmar_firma` con un presupuesto
     # CORTO a propósito: es una compra NUEVA la que está preguntando por una firma VIEJA, y no
@@ -1393,6 +1394,19 @@ def create_app(session_factory, chain: ChainSource,
     # y la siguiente compra la vuelve a intentar.
     _RECONCILIACION_INTENTOS = 2
     _RECONCILIACION_ESPERA_S = 1.0
+
+    # La confirmación del cobro RECIÉN enviado (paso 8: la firma NUEVA, no la reconciliación de
+    # una `pending` vieja) TAMBIÉN necesita presupuesto corto, y antes no lo tenía: los valores
+    # por defecto de `confirmar_firma` (10 intentos de hasta 20 s, más 9 esperas de 1.5 s = unos
+    # 213 s) no caben en una petición HTTP normal, y ningún proxy delante (ngrok, Cloudflare...)
+    # aguanta esa espera. En la práctica, eso le enseñaba un error a quien acababa de pagar con
+    # éxito, y su reintento se topaba con el 409. Bajarlo es estrictamente mejor, no un riesgo
+    # nuevo: la red de seguridad ya existe (una fila `pending` con firma se reconcilia sola en la
+    # visita siguiente, punto 1), así que agotar este presupuesto corto solo significa "se sabrá
+    # en la próxima petición", nunca "se perdió algo".
+    _CONFIRMACION_INTENTOS = 4
+    _CONFIRMACION_ESPERA_S = 1.0
+    _CONFIRMACION_TIMEOUT_S = 4.0
 
     # Freno de peticiones de la compra del pase, con contadores PROPIOS (mismo motivo que los del
     # tip y el withdraw: compartirlos haría que comprar un pase te dejara sin poder retirar). Este
@@ -1452,9 +1466,21 @@ def create_app(session_factory, chain: ChainSource,
 
         Y como la firma de una transacción de Solana viaja DENTRO de la propia transacción (no la
         inventa el RPC; ver `leer_firma`), se puede anotar antes de enviar. Consecuencia directa:
-        TODA `pending` tiene firma. Ya no existe la `pending` sin firma, que era la única celda
-        que necesitaba ojos humanos y la única donde alguien podía quedarse cobrado sin recurso.
-        Toda `pending` es hoy autorreconciliable por el punto 1.
+        TODA `pending` tiene firma. Ya no existe la `pending` sin firma, que era la celda donde
+        alguien podía quedarse cobrado sin recurso Y sin ni una firma que mirar.
+
+        Tener firma NO es sinónimo de autorreconciliable, y esto NO queda arreglado del todo:
+        si `enviar_cobro` revienta con un `httpx.ConnectError` (la conexión ni se llegó a abrir,
+        así que no salió ni un byte de esta máquina), cae en el mismo `except Exception` genérico
+        que un timeout normal, y la fila queda `pending` CON firma — pero esa firma nunca viajó a
+        ningún RPC y no va a aparecer en NINGUNA cadena. `confirmar_firma` la sondeará para
+        siempre sin encontrarla y devolverá `None` para siempre, así que ninguna reconciliación
+        futura (punto 1) la va a resolver sola: es la única celda que sigue necesitando ojos
+        humanos. Arreglarlo de raíz exige distinguir "el RPC contestó y no conoce esa firma" de
+        "no pude ni preguntar", que el `except Exception` de hoy no distingue; queda fuera de
+        alcance aquí porque el arreglo obvio (caducar la `pending` vieja a `failed` sin más)
+        reabre el doble cobro: con el presupuesto corto de la reconciliación, dos sondeos que
+        fallan por red dan el mismo `None` que una firma que de verdad nunca se difundió.
 
         DÓNDE EMPIEZA LO INDETERMINADO. En el POST de `sendTransaction` (paso 7) y no antes: ahí
         SÍ pudo haber salido aunque la respuesta que veamos sea un error de red. Todo lo anterior
@@ -1471,16 +1497,28 @@ def create_app(session_factory, chain: ChainSource,
             `submit_signed_tx`) o la cadena la ejecutó y falló (`confirmar_firma` viendo un
             `err`). El dinero no se movió — aunque "el RPC rechazó" es el rechazo DE ESE nodo, no
             una garantía de red: es la mejor lectura que tenemos con lo que nos dijo.
-          · `pending`: una compra a medias, SIEMPRE con firma. Solo el tiempo distingue los dos
-            casos, y la compra siguiente de la misma wallet los resuelve igual (punto 1):
-              - Fresca (segundos): normal, está enviando o confirmando. Se resuelve sola en el
-                mismo request.
-              - Vieja: el envío no dio veredicto, o `confirmar_firma` agotó los reintentos sin ver
-                ni confirmación ni error. Cualquier compra siguiente de esa wallet vuelve a
-                preguntarle a la cadena por esa firma y la cierra sola en cuanto haya veredicto.
-                Solo sigue siendo un problema si el veredicto tarda más que la paciencia del
-                jugador; para encontrar esas: `SELECT * FROM tracker_passes WHERE status =
-                'pending' AND created_at < <ahora - unos minutos>`.
+          · `pending`: una compra a medias, SIEMPRE con firma. Para encontrar las que llevan un
+            rato así: `SELECT * FROM tracker_passes WHERE status = 'pending' AND created_at <
+            <ahora - unos minutos>`. Entre esas filas hay dos casos que NO se distinguen mirando
+            la base, solo preguntándole a la cadena por la firma (`getSignatureStatuses` o un
+            explorador):
+              - Se va a resolver sola: el envío no dio veredicto, o `confirmar_firma` agotó su
+                presupuesto corto sin ver ni confirmación ni error, pero la transacción SÍ salió
+                de esta máquina. La compra siguiente de esa wallet vuelve a preguntar (punto 1) y
+                la cierra en cuanto la cadena tenga veredicto. Es el caso normal y no necesita que
+                nadie la mire.
+              - NO se va a resolver nunca sola: la transacción nunca llegó a difundirse (por
+                ejemplo, un `httpx.ConnectError` al enviarla — la conexión ni se abrió), así que
+                esa firma no está ni va a estar en ninguna cadena y ninguna reconciliación futura
+                la va a encontrar. Esta es la única celda que de verdad necesita ojos humanos hoy.
+                QUÉ HACER, sin riesgo: comprobar la firma (`tx_signature`) contra el RPC o un
+                explorador. Si de verdad no aparece Y ya ha pasado tiempo de sobra sobre la
+                validez de un blockhash (con margen: varios minutos, no segundos), es seguro
+                marcar esa fila `failed` a mano — un blockhash caduca en unos 60-90 s, así que
+                pasado ese margen la transacción NUNCA va a poder llegar a landear, y Solana no
+                ejecuta nada parcial: si no aterrizó, el dinero no se movió. Marcarla `failed`
+                solo libera el candado de esa wallet; no hace falta ninguna devolución porque
+                nunca hubo cobro.
 
         Queda un hueco irreducible: cobrado y confirmado, y morirse antes del paso 8. La fila se
         queda `pending` con su firma, y la reconciliación del punto 1 la cierra sola. No hay
@@ -1619,7 +1657,10 @@ def create_app(session_factory, chain: ChainSource,
                             wallet, firma, e, exc_info=True)
             raise HTTPException(502, "charge failed") from e
 
-        resultado = await confirmar_firma(solana_rpc_url, firma)
+        resultado = await confirmar_firma(solana_rpc_url, firma,
+                                          intentos=_CONFIRMACION_INTENTOS,
+                                          espera_s=_CONFIRMACION_ESPERA_S,
+                                          timeout_s=_CONFIRMACION_TIMEOUT_S)
         if resultado is False:
             # Rechazo: la cadena la ejecutó y falló (`err` presente). El dinero no se movió.
             fila.status = "failed"

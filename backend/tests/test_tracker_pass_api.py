@@ -501,11 +501,11 @@ def test_reconciliar_no_solapa_con_un_pase_que_YA_esta_vigente(pase_client, pase
 # ── K: la autorreconciliación no puede colgarse minutos ──────────────────────────────────────
 
 
-def test_la_reconciliacion_usa_un_presupuesto_corto_el_cobro_nuevo_no(pase_client, pase_cobro_ok):
-    # La llamada de la reconciliación (sobre la firma VIEJA) lleva `intentos`/`espera_s` cortos;
-    # la de confirmar el cobro que se acaba de hacer (sobre la firma NUEVA) no lleva nada, así
-    # que usa los valores por defecto de `confirmar_firma` — a una recién enviada sí hay que
-    # darle tiempo de verdad para asentarse.
+def test_la_reconciliacion_usa_un_presupuesto_corto(pase_client, pase_cobro_ok):
+    # La llamada de la reconciliación (sobre la firma VIEJA) lleva `intentos`/`espera_s` cortos.
+    # La confirmación del cobro que se acaba de hacer (sobre la firma NUEVA) TAMBIÉN los lleva
+    # cortos hoy (ver `_CONFIRMACION_*` en main.py): los valores por defecto de `confirmar_firma`
+    # (unos 213 s) no caben en una petición HTTP normal, y ningún proxy delante los aguanta.
     with pase_client.session_factory() as s:
         s.add(_pending(tx_signature="FirmaVieja"))
         s.commit()
@@ -516,6 +516,23 @@ def test_la_reconciliacion_usa_un_presupuesto_corto_el_cobro_nuevo_no(pase_clien
     reconciliacion = llamadas[0]
     assert reconciliacion.get("intentos", 10) < 10
     assert reconciliacion.get("espera_s", 1.5) <= 1.0
+
+
+def test_la_confirmacion_del_cobro_nuevo_TAMBIEN_usa_un_presupuesto_corto(pase_client,
+                                                                          pase_cobro_ok):
+    # Sin ninguna `pending` previa que reconciliar, la ÚNICA llamada a `confirmar_firma` es la
+    # que confirma la firma RECIÉN enviada. Antes usaba los valores por defecto (10 intentos de
+    # 20 s, unos 213 s en total) y ningún proxy delante aguantaba esa espera: una compra que SÍ
+    # funcionaba se le enseñaba como un error a quien acababa de pagar. Debe llevar el
+    # presupuesto corto de `_CONFIRMACION_*`, igual que la reconciliación.
+    r = pase_client.post("/gacha/tracker-pass", json={"days": 7}, headers=pase_client.hdrs)
+    assert r.status_code == 200, r.text
+    llamadas = pase_client.mando["confirma_llamadas"]
+    assert len(llamadas) == 1
+    cobro = llamadas[0]
+    assert cobro.get("intentos", 10) < 10
+    assert cobro.get("espera_s", 1.5) <= 1.0
+    assert cobro.get("timeout_s", 20.0) < 20.0
 
 
 # ── Construcción REAL, sin mockear ───────────────────────────────────────────────────────────
