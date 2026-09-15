@@ -145,3 +145,6 @@ during development, in Spanish.
 
 Collector Arena is built by a solo founder. Development started in June 2026, and the product has
 been live on Solana mainnet since August 2026.
+
+Because development started before the Colosseum hackathon, commit messages up to September 2026
+and many code comments are in Spanish. New work is written in English.
