@@ -1021,6 +1021,21 @@ def create_app(session_factory, chain: ChainSource,
     # sobre 16.000 tiradas no se mueve de forma apreciable en sesenta segundos.
     _ev_cache: dict = {"t": 0.0, "filas": []}
     _EV_CACHE_TTL = 60.0
+    #: UN cálculo a la vez, y no es una optimización: es lo que evita tumbar el backend.
+    #:
+    #: Medido en mainnet el 17/09 con la base en 283 MB: un `/gacha/ev` cuesta 54 s. La caché dura
+    #: 60, así que casi siempre está vencida, y CADA petición que entraba durante esos 54 s
+    #: arrancaba su propio cálculo. Cada cálculo se lleva un hilo del pool de FastAPI (40) y una
+    #: conexión del de SQLAlchemy (15), y la retiene hasta acabar. Resultado: el pool de conexiones
+    #: reventado 630 veces en tres días —`QueuePool limit of size 5 overflow 10 reached`— y con él
+    #: TODO lo demás, incluido el chat, porque quien necesitaba base se quedaba esperando 30 s para
+    #: acabar en error.
+    #:
+    #: Con este cerrojo, N peticiones simultáneas producen UN cálculo. Las demás no esperan: se
+    #: llevan la copia anterior aunque esté vencida, que para una estadística de 48 horas es
+    #: exactamente igual de útil. Solo se espera de verdad la primera vez, cuando no hay nada que
+    #: servir.
+    _ev_cerrojo = asyncio.Lock()
 
     @app.get("/gacha/ev")
     async def gacha_ev(hours: int = Query(default=48, ge=1, le=168)):
@@ -1033,6 +1048,10 @@ def create_app(session_factory, chain: ChainSource,
         svc = _gacha_or_503()
         ahora = _time.time()
         if _ev_cache["filas"] and ahora - _ev_cache["t"] < _EV_CACHE_TTL and hours == 48:
+            return {"rows": _ev_cache["filas"], "updated_at": int(_ev_cache["t"])}
+        # Vencida pero con datos, y ya hay alguien calculando: se sirve lo viejo en vez de abrir un
+        # cálculo más. 60 s de desfase en una ventana de 48 h no cambian ninguna decisión.
+        if hours == 48 and _ev_cache["filas"] and _ev_cerrojo.locked():
             return {"rows": _ev_cache["filas"], "updated_at": int(_ev_cache["t"])}
         try:
             maquinas = await svc.machines()
@@ -1074,10 +1093,20 @@ def create_app(session_factory, chain: ChainSource,
         # `run_in_threadpool` lo aparta a un hilo: sigue costando lo mismo, pero lo paga quien pidió
         # la página y no todos los demás. El trabajo de base va dentro del hilo a propósito — la
         # sesión se abre y se cierra ahí, sin cruzar la frontera.
-        filas = await run_in_threadpool(_calcular_filas)
-        filas.sort(key=lambda f: (f["realized_edge_pct"] is None, -(f["realized_edge_pct"] or 0)))
-        if hours == 48:
-            _ev_cache.update(t=ahora, filas=filas)
+        #
+        # Y va bajo cerrojo: apartarlo del bucle sin limitar cuántos caben a la vez cambió un
+        # cálculo que bloqueaba a todos por CUARENTA cálculos peleándose por quince conexiones,
+        # que es peor. Ver `_ev_cerrojo`.
+        async with _ev_cerrojo:
+            # Otra petición pudo calcularlo mientras se esperaba el turno: si lo dejó fresco, se
+            # aprovecha en vez de repetir 54 s de trabajo idéntico.
+            ahora = _time.time()
+            if hours == 48 and _ev_cache["filas"] and ahora - _ev_cache["t"] < _EV_CACHE_TTL:
+                return {"rows": _ev_cache["filas"], "updated_at": int(_ev_cache["t"])}
+            filas = await run_in_threadpool(_calcular_filas)
+            filas.sort(key=lambda f: (f["realized_edge_pct"] is None, -(f["realized_edge_pct"] or 0)))
+            if hours == 48:
+                _ev_cache.update(t=ahora, filas=filas)
         return {"rows": filas, "updated_at": int(ahora)}
 
     # El carril rápido. Lleva SOLO las rachas, y esa frontera está puesta a conciencia: son las dos

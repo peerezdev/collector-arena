@@ -8,6 +8,26 @@ class Base(DeclarativeBase):
 
 def make_engine(database_url: str):
     connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
+    # El pool se dimensiona contra el del SERVIDOR, no a ojo. FastAPI ejecuta en un pool de 40
+    # hilos todo lo que no es async —las dependencias síncronas, `run_in_threadpool`— y cada uno
+    # de esos hilos puede pedir su propia conexión. Con el valor por defecto de SQLAlchemy (5 + 10
+    # de overflow = 15) sobran 25 hilos capaces de quedarse esperando: piden conexión, aguantan 30
+    # segundos y mueren con `QueuePool limit of size 5 overflow 10 reached`.
+    #
+    # No es teórico: pasó 630 veces en tres días en mainnet (17/09). Y el daño no se queda en quien
+    # provocó la carga —el EV tracker— porque los hilos bloqueados son los mismos que necesita todo
+    # lo demás: el chat dejó de cargar y hasta /health tardaba más de 30 s.
+    #
+    # 40 + 10 deja margen por encima del pool de hilos, así que la espera por conexión deja de ser
+    # un modo de fallo. Para SQLite abrir una conexión es barato —es un fichero, no una red— y las
+    # lecturas van en paralelo; lo que sigue serializándose son las escrituras, que es cosa suya y
+    # no del pool.
+    # Solo para una base EN FICHERO. Con `:memory:` —la de los tests— SQLAlchemy usa
+    # SingletonThreadPool, que no acepta estos parámetros y revienta con TypeError al construir el
+    # engine: 348 tests en rojo por dimensionar un pool que ahí ni existe.
+    if database_url.startswith("sqlite") and ":memory:" not in database_url:
+        return create_engine(database_url, connect_args=connect_args,
+                             pool_size=40, max_overflow=10)
     return create_engine(database_url, connect_args=connect_args)
 
 
