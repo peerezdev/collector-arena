@@ -1,32 +1,34 @@
 /**
- * Cómo se escribe un contador de Gimmighouls.
+ * How a Gimmighouls counter is written.
  *
- * El contador ES DECIMAL desde que el gacha paga 0.01 por dólar: un sobre de 50 $ da medio punto,
- * y con un contador entero esas dos máquinas (25 y 50 $, las más jugadas) no habrían pagado nada.
- * Ver `award_gimmighouls` en el backend.
+ * The counter IS DECIMAL ever since the gacha pays 0.01 per dollar: a 50 dollar pack gives half
+ * a point, and with an integer counter those two machines (25 and 50 dollars, the most played
+ * ones) would have paid nothing. See `award_gimmighouls` in the backend.
  *
- * El precio de eso es que el número que llega ya no es redondo, así que hace falta decidir CUÁNTO
- * se enseña. Dos decimales: es lo que hace visible medio punto sin sacar por pantalla el 36.465 de
- * un boost del 10.5%. El backend guarda seis, así que lo que se ve está redondeado y lo que se
- * acumula no. Esto está aquí y no repartido por las pantallas porque son cuatro sitios los que lo
- * pintan (cabecera de escritorio, cabecera de móvil, y dos en el ranking) y basta que uno se quede
- * atrás para enseñar un número que no se parece a los otros tres.
+ * The price of that is that the number that arrives is no longer round, so it is necessary to
+ * decide HOW MUCH gets shown. Two decimals: that is what makes half a point visible without
+ * showing on screen the 36.465 of a 10.5% boost. The backend stores six, so what is shown is
+ * rounded and what accumulates is not. This lives here instead of spread across the screens
+ * because there are four places that render it (desktop header, mobile header, and two in the
+ * ranking) and it is enough for one to fall behind to show a number that does not match the
+ * other three.
  */
 const DECIMALES = 2
 
-/** Recorta a dos decimales y quita los ceros de la cola: 0.5 → "0.5", 36.465 → "36.47", 5 → "5". */
+/** Trims to two decimals and drops trailing zeros: 0.5 → "0.5", 36.465 → "36.47", 5 → "5". */
 function corta(n: number): number {
   return +n.toFixed(DECIMALES)
 }
 
-/** Con separador de miles. Para la cabecera de escritorio y el ranking ancho. */
+/** With a thousands separator. For the desktop header and the wide ranking. */
 export function fmtGimmighouls(n: number): string {
   return corta(n).toLocaleString('en-US', { maximumFractionDigits: DECIMALES })
 }
 
 /**
- * Abreviado para los sitios estrechos: 1K, 1M, 1B. Debajo de mil se escribe entero, con sus
- * decimales, porque es justo el tramo donde vive medio punto y abreviarlo lo borraría.
+ * Abbreviated for narrow spots: 1K, 1M, 1B. Below a thousand it is written in full, with its
+ * decimals, because that is exactly the range where half a point lives and abbreviating it would
+ * erase it.
  */
 export function fmtGimmighoulsCompacto(n: number): string {
   const signo = n < 0 ? '-' : ''

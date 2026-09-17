@@ -1352,9 +1352,9 @@ def _ev_machines():
 def test_el_tracker_no_enseña_una_maquina_que_CC_tiene_cerrada():
     """Medir el EV de una máquina a la que nadie puede tirar ocupa sitio y sugiere una decisión
     que no se puede tomar."""
-    # El tracker cerró sus puertas (tarea 7): la wallet de este test entra por la lista blanca de
-    # la casa, que es la vía que no exige sembrar una batalla ni un TrackerPass para probar un
-    # filtro que no tiene nada que ver con el acceso.
+    # The tracker closed its doors (task 7): this test's wallet gets in through the house's
+    # whitelist, which is the path that does not require seeding a battle or a TrackerPass just
+    # to test a filter that has nothing to do with access.
     c, priv = _client(tracker_access_allowlist={WALLET_A})
     _ev_machines()
     codigos = [f["machine"] for f in c.get("/gacha/ev", headers=_hdrs(priv, WALLET_A)).json()["rows"]]

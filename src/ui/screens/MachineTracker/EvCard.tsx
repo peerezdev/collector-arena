@@ -22,7 +22,7 @@ import { ACENTO, acentoDe, afirma, colorRareza, fondoFila } from './evAcento'
 export function EvCard({ fila, nota, onArrastrar }: {
   fila: EvRow
   nota?: string
-  /** Se avisa al empezar a arrastrar la tarjeta. Sin esto la tarjeta no se puede recolocar. */
+  /** Fires when the card starts being dragged. Without it the card cannot be repositioned. */
   onArrastrar?: () => void
 }) {
   const [arrastrable, setArrastrable] = useState(false)
@@ -47,8 +47,8 @@ export function EvCard({ fila, nota, onArrastrar }: {
       borderRadius: 16, boxShadow: '0 8px 24px #00000055',
       display: 'flex', flexDirection: 'column', overflow: 'hidden',
     }}
-      // Arrastrable SOLO mientras el cursor está sobre el tirador. Si el artículo fuera
-      // `draggable` siempre, seleccionar un número de la tarjeta arrancaría un arrastre.
+      // Draggable ONLY while the cursor is over the handle. If the article were always
+      // `draggable`, selecting a number on the card would start a drag.
       draggable={arrastrable}
       onDragStart={onArrastrar}
       onDragEnd={() => setArrastrable(false)}
@@ -74,12 +74,12 @@ export function EvCard({ fila, nota, onArrastrar }: {
           ${fila.pack_price}
           {fila.buyback_pct ? ` · bb ${Math.round(fila.buyback_pct * 100)}%` : ''}
         </span>
-        {/* El tirador. Solo aparece si la pantalla sabe reordenar, así que la tarjeta sigue
-            valiendo en sitios donde no hay orden que tocar.
+        {/* The handle. It only appears when the screen knows how to reorder, so the card still
+            works in places where there is no order to touch.
 
-            `onMouseDown` enciende `draggable` y `onDragEnd` lo apaga: es lo que hace que el
-            arrastre salga de AQUÍ y no de cualquier punto de la tarjeta. El navegador no permite
-            marcar arrastrable solo a un hijo. */}
+            `onMouseDown` turns `draggable` on and `onDragEnd` turns it off: that is what makes
+            the drag start HERE and not from any point of the card. The browser does not let you
+            mark only a child as draggable. */}
         {onArrastrar && (
           <span
             aria-hidden
@@ -242,9 +242,9 @@ export function EvCard({ fila, nota, onArrastrar }: {
             {lab.detalle}
           </div>
         )}
-        {/* De la conclusión a las tiradas que la producen. La tarjeta dice el resumen de 48 horas;
-            esto es lo que hay detrás, y es la única forma de comprobarlo. Lleva a Winners con la
-            máquina ya filtrada, que además dejó de estar en el menú lateral. */}
+        {/* From the conclusion to the pulls behind it. The card states the 48 hour summary; this
+            is what sits underneath, and it is the only way to check it. It leads to Winners with
+            the machine already filtered, which also stopped being in the side menu. */}
         <Link
           to={`/winners?machine=${encodeURIComponent(fila.machine)}`}
           style={{

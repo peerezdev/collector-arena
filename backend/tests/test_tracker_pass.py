@@ -1,4 +1,4 @@
-"""Precio y periodo del pase del tracker, sin tocar red ni cobros."""
+"""Price and period of the tracker pass, without touching network or charges."""
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -26,68 +26,69 @@ def _pase(s, wallet, dias, *, status, desde, hasta):
     s.commit()
 
 
-# ── Precio ───────────────────────────────────────────────────────────────────
+# ── Price ────────────────────────────────────────────────────────────────────
 
-def test_el_precio_llega_en_unidades_BASE_no_en_dolares():
-    # Todo el dinero de la aplicación se mueve en unidades base de 6 decimales. Devolver dólares
-    # aquí obligaría a convertir en cada llamada, y la primera que se olvidara cobraría un millón.
+def test_the_price_arrives_in_BASE_units_not_dollars():
+    # All of the application's money moves in base units of 6 decimals. Returning dollars here
+    # would force converting on every call, and the first one that forgot would charge a million.
     assert precio_base_units(7, 10.0, 30.0) == 10_000_000
     assert precio_base_units(30, 10.0, 30.0) == 30_000_000
 
 
-def test_un_precio_a_CERO_significa_apagado_no_gratis():
+def test_a_price_of_ZERO_means_off_not_free():
     assert precio_base_units(7, 0.0, 30.0) is None
     assert precio_base_units(30, 10.0, 0.0) is None
 
 
-def test_una_duracion_que_no_vendemos_no_tiene_precio():
+def test_a_duration_we_do_not_sell_has_no_price():
     assert precio_base_units(1, 10.0, 30.0) is None
     assert precio_base_units(365, 10.0, 30.0) is None
     assert DIAS_VALIDOS == (7, 30)
 
 
-def test_los_centimos_no_se_pierden_al_convertir():
-    # 2.01 son 2_010_000 exactos, pero 2.01 * 1_000_000 en coma flotante da 2009999.9999999998:
-    # truncar con `int()` perdería un céntimo aquí. Con 12.99 no pasaba (esa cae justo en un
-    # valor representable exacto), así que no servía para distinguir redondear de truncar.
+def test_cents_are_not_lost_when_converting():
+    # 2.01 is exactly 2_010_000, but 2.01 * 1_000_000 in floating point gives 2009999.9999999998:
+    # truncating with `int()` would lose a cent here. It didn't happen with 12.99 (that one lands
+    # right on an exactly representable value), so it didn't serve to tell rounding apart from
+    # truncating.
     assert precio_base_units(7, 2.01, 30.0) == 2_010_000
 
 
-# ── Pase vigente ─────────────────────────────────────────────────────────────
+# ── Active pass ──────────────────────────────────────────────────────────────
 
-def test_sin_pases_no_hay_nada_vigente(sf):
+def test_without_passes_nothing_is_active(sf):
     with sf() as s:
         assert pase_vigente(s, "W", ahora=AHORA) is None
 
 
-def test_un_pase_ACTIVO_y_en_fecha_vale(sf):
+def test_an_ACTIVE_pass_within_its_dates_is_valid(sf):
     with sf() as s:
         _pase(s, "W", 7, status="active", desde=AHORA - timedelta(days=1),
               hasta=AHORA + timedelta(days=6))
         assert pase_vigente(s, "W", ahora=AHORA) == AHORA + timedelta(days=6)
 
 
-def test_un_pase_PENDIENTE_no_da_acceso(sf):
-    # Es lo que hace que un cobro fallido no regale nada: la fila se escribe antes de cobrar.
+def test_a_PENDING_pass_does_not_grant_access(sf):
+    # It's what keeps a failed charge from giving away anything: the row is written before charging.
     with sf() as s:
         _pase(s, "W", 7, status="pending", desde=AHORA, hasta=AHORA + timedelta(days=7))
         assert pase_vigente(s, "W", ahora=AHORA) is None
 
 
-def test_un_pase_FALLIDO_tampoco(sf):
+def test_a_FAILED_pass_does_not_either(sf):
     with sf() as s:
         _pase(s, "W", 7, status="failed", desde=AHORA, hasta=AHORA + timedelta(days=7))
         assert pase_vigente(s, "W", ahora=AHORA) is None
 
 
-def test_un_pase_caducado_deja_de_valer(sf):
+def test_an_expired_pass_stops_being_valid(sf):
     with sf() as s:
         _pase(s, "W", 7, status="active", desde=AHORA - timedelta(days=8),
               hasta=AHORA - timedelta(seconds=1))
         assert pase_vigente(s, "W", ahora=AHORA) is None
 
 
-def test_con_varios_pases_manda_el_que_acaba_MAS_TARDE(sf):
+def test_with_several_passes_the_one_that_ends_LATEST_wins(sf):
     with sf() as s:
         _pase(s, "W", 7, status="active", desde=AHORA, hasta=AHORA + timedelta(days=7))
         _pase(s, "W", 30, status="active", desde=AHORA + timedelta(days=7),
@@ -95,24 +96,24 @@ def test_con_varios_pases_manda_el_que_acaba_MAS_TARDE(sf):
         assert pase_vigente(s, "W", ahora=AHORA) == AHORA + timedelta(days=37)
 
 
-def test_el_pase_de_OTRO_no_cuenta(sf):
+def test_ANOTHER_wallets_pass_does_not_count(sf):
     with sf() as s:
         _pase(s, "OTRO", 7, status="active", desde=AHORA, hasta=AHORA + timedelta(days=7))
         assert pase_vigente(s, "W", ahora=AHORA) is None
 
 
-# ── Periodo, con apilado ─────────────────────────────────────────────────────
+# ── Period, with stacking ────────────────────────────────────────────────────
 
-def test_sin_pase_previo_empieza_HOY(sf):
+def test_without_a_previous_pass_it_starts_TODAY(sf):
     with sf() as s:
         desde, hasta = periodo(s, "W", 7, ahora=AHORA)
         assert desde == AHORA
         assert hasta == AHORA + timedelta(days=7)
 
 
-def test_comprando_con_pase_vigente_SUMA_AL_FINAL(sf):
-    # Si comprar pronto quitara días, la gente aprendería a esperar a que caduque. Peor para
-    # ellos y peor para nosotros.
+def test_buying_with_an_active_pass_ADDS_AT_THE_END(sf):
+    # If buying early removed days, people would learn to wait for it to expire. Worse for them
+    # and worse for us.
     with sf() as s:
         _pase(s, "W", 7, status="active", desde=AHORA, hasta=AHORA + timedelta(days=5))
         desde, hasta = periodo(s, "W", 30, ahora=AHORA)
@@ -120,7 +121,7 @@ def test_comprando_con_pase_vigente_SUMA_AL_FINAL(sf):
         assert hasta == AHORA + timedelta(days=35)
 
 
-def test_con_el_pase_ya_caducado_vuelve_a_empezar_hoy(sf):
+def test_with_the_pass_already_expired_it_starts_over_today(sf):
     with sf() as s:
         _pase(s, "W", 7, status="active", desde=AHORA - timedelta(days=10),
               hasta=AHORA - timedelta(days=3))
@@ -128,8 +129,8 @@ def test_con_el_pase_ya_caducado_vuelve_a_empezar_hoy(sf):
         assert desde == AHORA
 
 
-def test_un_pendiente_NO_desplaza_la_compra_siguiente(sf):
-    # Si lo desplazara, un cobro fallido dejaría al jugador con el pase corrido hacia adelante.
+def test_a_pending_one_does_NOT_shift_the_next_purchase(sf):
+    # If it did shift it, a failed charge would leave the player with the pass pushed forward.
     with sf() as s:
         _pase(s, "W", 7, status="pending", desde=AHORA, hasta=AHORA + timedelta(days=7))
         desde, _ = periodo(s, "W", 7, ahora=AHORA)

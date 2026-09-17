@@ -1,16 +1,17 @@
-"""El pase de pago del Machine Tracker: cuánto cuesta y hasta cuándo vale.
+"""The Machine Tracker's payment pass: how much it costs and how long it's valid for.
 
-Sin red, sin cobros y sin `datetime.now()` escondido: el `ahora` se puede pasar, que es lo que
-hace estos tests fiables a cualquier hora. El cobro en sí vive en el endpoint, porque mezcla
-firma, RPC y base de datos y no se puede probar sin dobles.
+No network, no charges, and no hidden `datetime.now()`: `ahora` can be passed in, which is what
+makes these tests reliable at any hour. The charge itself lives in the endpoint, because it mixes
+signature, RPC and database and can't be tested without doubles.
 
-DOS REGLAS MANDAN AQUÍ, y las dos son decisiones, no detalles:
+TWO RULES RUN THIS FILE, and both are decisions, not details:
 
-  · SOLO `active` DA ACCESO. Un `pending` es una compra a medias y un `failed` es una compra que
-    no fue. Contar cualquiera de los dos regalaría el tracker a quien no pudo pagar.
+  · ONLY `active` GRANTS ACCESS. A `pending` is a half-finished purchase and a `failed` is a
+    purchase that never happened. Counting either would give away the tracker to whoever
+    couldn't pay.
 
-  · COMPRAR ESTANDO DENTRO SUMA AL FINAL. Si comprar pronto quitara días, la gente aprendería a
-    esperar a que el pase caduque, que es peor para todos.
+  · BUYING WHILE ALREADY INSIDE ADDS AT THE END. If buying early removed days, people would learn
+    to wait for the pass to expire, which is worse for everyone.
 """
 from __future__ import annotations
 
@@ -22,40 +23,40 @@ from sqlalchemy.orm import Session
 
 from ..models import TrackerPass
 
-#: Las duraciones que vendemos. Cualquier otra no tiene precio y la compra se rechaza.
+#: The durations we sell. Any other one has no price and the purchase gets rejected.
 DIAS_VALIDOS: Tuple[int, int] = (7, 30)
 
 USDC = 1_000_000
 
 
 def precio_base_units(days: int, s7: float, s30: float) -> Optional[int]:
-    """Lo que cuesta esa duración, en unidades base de USDC. `None` si no se vende.
+    """What that duration costs, in USDC base units. `None` if it isn't sold.
 
-    Devuelve unidades base y no dólares porque es como se mueve todo el dinero de la aplicación;
-    convertir en cada llamada acabaría con alguien olvidándolo y cobrando un millón.
+    Returns base units and not dollars because that's how all of the application's money moves;
+    converting on every call would end with someone forgetting to and charging a million.
 
-    Cero es APAGADO, no gratis: es el interruptor que permite desplegar sin precio decidido.
+    Zero is OFF, not free: it's the switch that lets this ship before a price is decided.
     """
     if days not in DIAS_VALIDOS:
         return None
     precio = s7 if days == 7 else s30
     if precio <= 0:
         return None
-    # `round` y no `int`: 12.99 * 1e6 en coma flotante es 12989999.999..., y truncar perdería un
-    # céntimo en cada compra con decimales.
+    # `round` and not `int`: 12.99 * 1e6 in floating point is 12989999.999..., and truncating
+    # would lose a cent on every purchase with decimals.
     return int(round(precio * USDC))
 
 
 def _con_zona(d: Optional[datetime]) -> Optional[datetime]:
-    """SQLite devuelve fechas SIN zona aunque se guarden con ella. Sin esto, compararlas con un
-    `ahora` con zona lanza TypeError, y solo en producción."""
+    """SQLite returns dates WITHOUT a timezone even when they're saved with one. Without this,
+    comparing them to a timezone-aware `ahora` raises TypeError, and only in production."""
     if d is None:
         return None
     return d if d.tzinfo is not None else d.replace(tzinfo=timezone.utc)
 
 
 def pase_vigente(session: Session, wallet: str, ahora: Optional[datetime] = None) -> Optional[datetime]:
-    """Hasta cuándo tiene pase esa wallet, o `None` si no tiene ninguno vigente."""
+    """Until when that wallet has a pass, or `None` if it has none currently active."""
     ahora = ahora or datetime.now(timezone.utc)
     filas = session.scalars(
         select(TrackerPass).where(TrackerPass.wallet == wallet, TrackerPass.status == "active")
@@ -66,11 +67,11 @@ def pase_vigente(session: Session, wallet: str, ahora: Optional[datetime] = None
 
 def periodo(session: Session, wallet: str, days: int,
             ahora: Optional[datetime] = None) -> Tuple[datetime, datetime]:
-    """Desde y hasta cuándo valdría un pase que se comprara AHORA.
+    """From and until when a pass bought RIGHT NOW would be valid.
 
-    Si ya hay uno vigente, el nuevo empieza donde acaba aquel. El wager NO entra en esta cuenta:
-    es una ventana rodante que cambia sola, así que descontarlo obligaría a adivinar cuánto va a
-    durar el acceso que ya tienes.
+    If one is already active, the new one starts where that one ends. The wager does NOT enter
+    into this calculation: it's a rolling window that changes on its own, so accounting for it
+    would force guessing how long the access you already have is going to last.
     """
     ahora = ahora or datetime.now(timezone.utc)
     desde = pase_vigente(session, wallet, ahora=ahora) or ahora

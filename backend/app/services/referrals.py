@@ -45,10 +45,10 @@ def _get_or_create_user(session: Session, wallet: str) -> User:
 
 USDC = 1_000_000  # USDC base units per dollar (6 decimals)
 
-#: Decimales que se guardan de un premio. La coma flotante binaria no sabe escribir 1.1, así que
-#: 100 $ a 0.5 con un boost del 10% da 110.00000000000001 en vez de 110. Recortar aquí deja el
-#: contador en el número que saldría a mano. Seis decimales están muy por debajo del premio más
-#: pequeño que se puede ganar (0.01 por dólar sobre 1 $ es 0.01), así que no se pierde nada real.
+#: Decimals kept from a payout. Binary floating point cannot write 1.1, so 100 $ at 0.5 with a
+#: 10% boost gives 110.00000000000001 instead of 110. Truncating here leaves the counter at the
+#: number you would get by hand. Six decimals sit well below the smallest payout that can be
+#: earned (0.01 per dollar on 1 $ is 0.01), so nothing real gets lost.
 DECIMALES = 6
 
 
@@ -61,10 +61,11 @@ def award_gimmighouls(session: Session, wallet: str, buyin_base_units: float, ra
     base * referrer_pct (credited to owner_wallet's User, or to ReferralCode.earned as a fallback).
     Returns the amount credited to the user.
 
-    Lo que se acredita son DECIMALES. El contador era entero, y con el gacha a 0.01 por dólar dejó
-    de valer: un sobre de 50 $ da medio punto, `round(0.5)` es 0, y las dos máquinas más jugadas
-    (las de 25 y 50 $) habrían dejado de pagar nada mientras la ayuda prometía 0.01 por dólar.
-    Tampoco se paga de más: lo único que se recorta es la basura binaria, ver `DECIMALES`.
+    What gets credited is DECIMALS. The counter used to be an integer, and with the gacha at 0.01
+    per dollar it stopped working: a 50 $ pack gives half a point, `round(0.5)` is 0, and the two
+    most played machines (the 25 and 50 $ ones) would have stopped paying anything while the help
+    text still promised 0.01 per dollar. Nothing gets overpaid either: the only thing trimmed is
+    binary noise, see `DECIMALES`.
     """
     if ratio is None:
         ratio = get_settings().gimmighoul_per_usdc

@@ -1,5 +1,5 @@
-"""La tabla del pase. Es la ÚNICA parte con estado del acceso al tracker: la ventana del wager
-se sigue recalculando en cada consulta y no guarda nada."""
+"""The pass table. It's the ONLY stateful part of tracker access: the wager window keeps getting
+recalculated on every query and stores nothing."""
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import create_engine, select
@@ -18,8 +18,8 @@ def _sf():
     return make_session_factory(engine)
 
 
-def test_la_tabla_se_crea_sola_y_guarda_un_pase():
-    # Es tabla NUEVA, así que la crea `create_all`. No hace falta tocar `_ENSURE_COLUMNS`.
+def test_the_table_creates_itself_and_stores_a_pass():
+    # It's a NEW table, so `create_all` creates it. No need to touch `_ENSURE_COLUMNS`.
     sf = _sf()
     with sf() as s:
         s.add(TrackerPass(id="p1", wallet="W", days=7, price_base_units=10_000_000,
@@ -29,12 +29,12 @@ def test_la_tabla_se_crea_sola_y_guarda_un_pase():
         p = s.scalars(select(TrackerPass).where(TrackerPass.wallet == "W")).one()
         assert p.days == 7
         assert p.status == "pending"
-        assert p.tx_signature is None       # todavía no se ha cobrado
+        assert p.tx_signature is None       # hasn't been charged yet
 
 
-def test_la_firma_se_puede_guardar_antes_de_activar():
-    # Es lo que hace reconciliable el hueco entre cobrar y activar: `pending` CON firma significa
-    # exactamente "esto se cobró y no se activó".
+def test_the_signature_can_be_saved_before_activating():
+    # It's what makes the gap between charging and activating reconcilable: `pending` WITH a
+    # signature means exactly "this was charged and not activated".
     sf = _sf()
     with sf() as s:
         s.add(TrackerPass(id="p2", wallet="W", days=30, price_base_units=30_000_000,

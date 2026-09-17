@@ -79,7 +79,7 @@ def acceso(session: Session, wallet: Optional[str], *, minimo_usd: float = MINIM
            lista_blanca: Optional[set[str]] = None,
            pase_hasta: Optional[datetime] = None,
            precios: Optional[dict] = None) -> dict:
-    """Si esa wallet puede ver el tracker, cuánto le falta si no, y por qué motivo entra.
+    """Whether that wallet can see the tracker, how much it is missing if not, and why it gets in.
 
     Sin wallet no hay acceso, pero tampoco es un error: es alguien que no ha entrado, y lo que
     procede es enseñarle qué es esto y qué hace falta, no un 401.
@@ -100,21 +100,23 @@ def acceso(session: Session, wallet: Optional[str], *, minimo_usd: float = MINIM
         mayúsculas, y una comparación laxa dejaría entrar wallets que solo se PARECEN a la de
         la casa.
 
-    `pase_hasta` es la tercera vía: quien compró un pase entra sin haber apostado nada, mientras
-    ese pase siga vigente. Lo resuelve `tracker_pass.pase_vigente`; aquí solo se confía en la
-    fecha si todavía es futura, porque la puerta no puede fiarse de un pase ya caducado.
+    `pase_hasta` is the third path: whoever bought a pass gets in without having wagered
+    anything, while that pass is still valid. `tracker_pass.pase_vigente` resolves it; here the
+    date is only trusted if it is still in the future, because the gate cannot rely on a pass
+    that has already expired.
 
-    Estar en la lista o tener pase abre la puerta pero NO falsea `wagered_usd`: se sigue diciendo
-    lo que de verdad se ha apostado, porque esa cifra también se enseña y mentirla haría
-    mentirosa a la pantalla entera.
+    Being on the list or having a pass opens the gate but does NOT falsify `wagered_usd`: it
+    keeps reporting what was really wagered, because that figure is also shown, and lying about
+    it would make the whole screen a liar.
 
-    `via` dice el motivo REAL por el que se entra, resuelto de más fuerte a más débil (casa, pase,
-    wager). Sin ese orden alguien con pase Y wager saldría como "wager", y nadie entendería por
-    qué sigue dentro el día que el wager se le salga de la ventana.
+    `via` states the REAL reason entry is granted, resolved from strongest to weakest (house,
+    pass, wager). Without that order, someone with both a pass AND a wager would come out as
+    "wager", and nobody would understand why they are still in the day the wager falls out of
+    the window.
 
-    `precios` viaja tal cual en `pass_prices`, para que la pantalla pueda pintar el bloque de
-    compra sin conocer los settings del backend. Vacío y no con ceros: que la compra esté apagada
-    no es algo que la pantalla tenga que aprender a interpretar.
+    `precios` travels as is inside `pass_prices`, so the screen can render the purchase block
+    without knowing the backend's settings. Empty, not zeros: the purchase being off is not
+    something the screen has to learn to interpret.
     """
     apostado = wager_reciente_usd(session, wallet, dias=dias, ahora=ahora) if wallet else 0.0
     # `wallet and` va delante a propósito: sin sesión no se compara contra la lista. Sin esa
@@ -125,13 +127,15 @@ def acceso(session: Session, wallet: Optional[str], *, minimo_usd: float = MINIM
     con_pase = bool(pase_hasta and pase_hasta > ahora_dt)
     por_wager = apostado >= minimo_usd
 
-    # De más fuerte a más débil, para que `via` diga el motivo REAL. Sin este orden, alguien con
-    # pase Y wager saldría como "wager" y nadie entendería por qué sigue dentro al caducar.
+    # From strongest to weakest, so `via` states the REAL reason. Without this order, someone
+    # with both a pass AND a wager would come out as "wager" and nobody would understand why
+    # they are still in when it expires.
     via = "house" if invitada else "pass" if con_pase else "wager" if por_wager else None
 
-    # Solo la casa vacía `missing_usd`: esa cuenta no necesita saber cuánto le falta por wager. Un
-    # pase no lo vacía porque sigue siendo información real: cuánto llevaría de wager si el pase
-    # no estuviera, que es lo que la pantalla puede querer seguir enseñando mientras dura.
+    # Only the house empties `missing_usd`: that account does not need to know how much it is
+    # missing by wager. A pass does not empty it because it is still real information: how much
+    # wager there would be if the pass were not there, which is what the screen may want to
+    # keep showing while it lasts.
     falta = 0.0 if invitada else max(0.0, minimo_usd - apostado)
     return {
         "allowed": via is not None,

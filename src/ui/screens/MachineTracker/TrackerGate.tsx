@@ -23,9 +23,9 @@ const AMBAR = '#ffd166'
  */
 export function TrackerGate({ acceso, token = null, onComprado = () => {} }: {
   acceso: TrackerAccess
-  // Los dos con valor por defecto: los tests existentes de esta puerta la montan sin ellos, de
-  // antes de que se pudiera comprar el pase, y no tienen por qué saber de la compra para seguir
-  // probando lo que ya probaban. Sin token, `PassOffer` no se ofrece (hace falta para cobrar).
+  // Both have defaults: this gate's existing tests mount it without them, from before the pass
+  // could be bought, and they have no reason to know about the purchase to keep testing what they
+  // already tested. With no token, `PassOffer` is not offered (it is needed to charge).
   token?: string | null
   onComprado?: () => void
 }) {
@@ -140,9 +140,9 @@ export function TrackerGate({ acceso, token = null, onComprado = () => {} }: {
             Find a match →
           </Link>
 
-          {/* La compra va AQUÍ y no en un ajuste aparte: es el momento exacto en que alguien
-              siente que le falta la herramienta, justo tras leer cuánto le queda para entrar
-              jugando. Sin precios configurados no se pinta nada (ver `PassOffer`). */}
+          {/* The purchase goes HERE and not in some separate setting: this is the exact moment
+              someone feels the tool missing, right after reading how far they are from getting in
+              by playing. With no prices configured nothing is painted (see `PassOffer`). */}
           <PassOffer prices={acceso.pass_prices} token={token} onComprado={onComprado} />
 
           <div style={{

@@ -37,12 +37,13 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-describe('MachineTrackerPage · el acceso no se deja pisar por una respuesta vieja', () => {
-  it('una respuesta SIN token que llega DESPUÉS de la que sí tiene token no cierra la puerta', async () => {
-    // Reproduce lo que hace Privy en la carga real: `identityToken` llega primero `null` y
-    // después el token de verdad, así que hay DOS `fetchTrackerAccess` en vuelo a la vez. Si la
-    // de `null` (que el backend responde con `allowed: false`) tarda más que la del token real,
-    // su `.then` puede llegar el último y pisar el acceso bueno con la puerta cerrada.
+describe('MachineTrackerPage · access does not let itself be trampled by a stale response', () => {
+  it('a response WITHOUT a token that arrives AFTER the one that does have a token does not close the gate', async () => {
+    // Reproduces what Privy does on a real load: `identityToken` arrives first as `null` and
+    // afterward with the real token, so there are TWO `fetchTrackerAccess` calls in flight at
+    // once. If the one for `null` (which the backend answers with `allowed: false`) takes
+    // longer than the one for the real token, its `.then` can land last and overwrite the good
+    // access with the closed gate.
     let resolverSinToken!: (v: TrackerAccess) => void
     let resolverConToken!: (v: TrackerAccess) => void
     mocks.identityToken.mockReturnValue(null)
@@ -53,25 +54,26 @@ describe('MachineTrackerPage · el acceso no se deja pisar por una respuesta vie
 
     const { rerender } = render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
 
-    // Privy resuelve el token: el efecto de acceso se vuelve a disparar (depende de
-    // `identityToken`) y lanza una SEGUNDA petición, con token, mientras la primera sigue viva.
+    // Privy resolves the token: the access effect fires again (it depends on
+    // `identityToken`) and fires a SECOND request, with the token, while the first is still alive.
     mocks.identityToken.mockReturnValue('tok')
     rerender(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
 
-    // La MÁS NUEVA (con token) resuelve primero...
+    // The NEWEST one (with token) resolves first...
     await act(async () => { resolverConToken(accesoOk) })
-    // ...y la VIEJA (sin token) resuelve después. Sin guarda, esta pisaría el acceso bueno.
+    // ...and the OLD one (without token) resolves afterward. Without a guard, this would
+    // overwrite the good access.
     await act(async () => { resolverSinToken(accesoCerrado) })
 
-    // La puerta ("... to go") NO debe verse: el jugador tiene acceso de verdad.
+    // The gate ("... to go") must NOT be visible: the player really has access.
     expect(screen.queryByText(/to go/i)).toBeNull()
-    // Y sí se ve el panel del tracker (sin filas todavía, pero es el aviso del panel, no la puerta).
+    // And the tracker panel IS visible (no rows yet, but that is the panel's own notice, not the gate).
     expect(await screen.findByText(/No machines measured yet/i)).toBeTruthy()
   })
 
-  it('al revés: si la de con token es la vieja, gana la más nueva (sin acceso)', async () => {
-    // Caso simétrico: si el jugador pierde el pase entre medias, la respuesta que debe mandar es
-    // la ÚLTIMA pedida, no la que resuelve primero.
+  it('the other way around: if the one with a token is the stale one, the newest one wins (no access)', async () => {
+    // Symmetric case: if the player loses the pass in between, the response that should win is
+    // the LAST one requested, not the one that resolves first.
     let resolverConToken!: (v: TrackerAccess) => void
     let resolverSinToken!: (v: TrackerAccess) => void
     mocks.identityToken.mockReturnValue('tok')
@@ -85,9 +87,9 @@ describe('MachineTrackerPage · el acceso no se deja pisar por una respuesta vie
     mocks.identityToken.mockReturnValue(null)
     rerender(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
 
-    // La VIEJA (con token) resuelve primero con acceso...
+    // The OLD one (with token) resolves first with access...
     await act(async () => { resolverConToken(accesoOk) })
-    // ...pero la MÁS NUEVA (sin token) es la que manda, y no da acceso.
+    // ...but the NEWEST one (without token) is the one that wins, and gives no access.
     await act(async () => { resolverSinToken(accesoCerrado) })
 
     expect(await screen.findByText(/to go/i)).toBeTruthy()

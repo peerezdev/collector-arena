@@ -53,16 +53,16 @@ async def distribute_usdc(rpc_url, signer, escrow_wallet_id, escrow_address, pla
 async def construir_y_firmar_cobro(signer, player_wallet_id, player_address, operator_wallet_id,
                                    operator_address, escrow_address, usdc_mint, amount,
                                    blockhash) -> str:
-    """La MITAD de `collect_buyin` que todavía NO ha mandado nada a la red: construir la
-    transacción y firmarla. Devuelve la transacción firmada en base64.
+    """The HALF of `collect_buyin` that has NOT sent anything to the network yet: build the
+    transaction and sign it. Returns the signed transaction in base64.
 
-    POR QUÉ ESTÁ PARTIDA. Construir puede reventar (una dirección mal escrita en la
-    configuración, un blockhash que no se puede interpretar) y firmar puede reventar (Privy no
-    contesta), y ninguno de esos fallos ha difundido nada: son enteramente reintentables. Quien
-    llama puede por tanto hacer todo esto ANTES de escribir en su base, y así un fallo aquí no
-    deja rastro que luego haya que limpiar. Lo que no se puede deshacer empieza en `enviar_cobro`.
+    WHY IT IS SPLIT. Building can blow up (an address misspelled in the configuration, a
+    blockhash that cannot be parsed) and signing can blow up (Privy does not answer), and neither
+    of those failures has broadcast anything: they are entirely retryable. The caller can
+    therefore do all of this BEFORE writing to its database, so a failure here leaves no trace
+    that later needs cleaning up. What cannot be undone starts at `enviar_cobro`.
 
-    2-signer: el jugador es la autoridad del USDC, el operador paga la fee (el jugador no tiene
+    2-signer: the player is the USDC authority, the operator pays the fee (the player has no
     SOL).
     """
     tx = build_token_transfer(player_address, escrow_address, usdc_mint, blockhash,
@@ -73,22 +73,22 @@ async def construir_y_firmar_cobro(signer, player_wallet_id, player_address, ope
 
 
 async def enviar_cobro(rpc_url, signed) -> str:
-    """La otra mitad: difundir la transacción ya firmada. Devuelve su firma.
+    """The other half: broadcast the already-signed transaction. Returns its signature.
 
-    Es la línea que separa lo reintentable de lo que ya no se puede deshacer: a partir del POST de
-    `sendTransaction`, un error de red no significa que no haya salido.
+    It is the line that separates what is retryable from what can no longer be undone: from the
+    `sendTransaction` POST onward, a network error does not mean it did not go through.
     """
     return await submit_signed_tx(rpc_url, signed)
 
 
 async def collect_buyin(rpc_url, signer, player_wallet_id, player_address, operator_wallet_id,
                         operator_address, escrow_address, usdc_mint, amount, blockhash) -> str:
-    """Cobrar el buy-in de un jugador: construir, firmar y enviar, en una sola llamada.
+    """Charge a player's buy-in: build, sign and send, in a single call.
 
-    Envoltorio fino sobre las dos mitades de arriba, y a propósito: Pack Battle y Royale cobran
-    dentro de una máquina de estados que no tiene dónde guardar una transacción a medio camino,
-    así que para ellos "cobra esto" en un solo paso sigue siendo la forma correcta. Quien necesite
-    anotar la firma antes de enviar (la compra del pase del tracker) llama a las dos por separado.
+    A thin wrapper over the two halves above, and on purpose: Pack Battle and Royale charge from
+    inside a state machine that has nowhere to store a transaction halfway through, so for them
+    "charge this" in a single step is still the right shape. Whoever needs to record the
+    signature before sending (the tracker pass purchase) calls the two separately.
     """
     signed = await construir_y_firmar_cobro(signer, player_wallet_id, player_address,
                                             operator_wallet_id, operator_address, escrow_address,

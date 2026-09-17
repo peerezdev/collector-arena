@@ -29,9 +29,9 @@ from app.privy import PrivyVerifier
 from tests.conftest import make_es256, privy_auth_headers
 from tests.test_chain_mock import MockChainSource
 
-# `/gacha/ev` y `/gacha/ev/live` dejaron de ser públicos al pasar el tracker a cobrarse: aquí se
-# prueba que el bucle de eventos sigue vivo, no el acceso, así que la wallet de prueba entra por la
-# lista blanca (la vía de la casa) y el cliente lleva su token.
+# `/gacha/ev` and `/gacha/ev/live` stopped being public once the tracker started charging: what
+# is tested here is that the event loop stays alive, not access, so the test wallet gets in
+# through the whitelist (the house's path) and the client carries its token.
 WALLET = "8QDBKx8P3pxkRhiqyXFtYcPPf2CM1F5NiE5A8yjkgtm6"
 
 TARDANZA = 0.4          # lo que "cuesta" el cálculo de una máquina en el test

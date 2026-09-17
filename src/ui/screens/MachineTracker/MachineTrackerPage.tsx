@@ -29,11 +29,11 @@ export function MachineTrackerPage() {
   const { identityToken } = useIdentityToken()
   const [acceso, setAcceso] = useState<TrackerAccess | null>(null)
 
-  // Contador de peticiones: `identityToken` de Privy típicamente cambia dos veces al cargar (de
-  // nulo a token real), así que puede haber dos `fetchTrackerAccess` en vuelo a la vez. Sin esto,
-  // si la de SIN token (que responde `allowed: false`) tarda más que la de CON token, su `.then`
-  // llega el último y pisa el acceso bueno con la puerta cerrada. Con el contador, solo la
-  // respuesta de la petición MÁS RECIENTE puede tocar el estado; cualquier otra se descarta.
+  // Request counter: Privy's `identityToken` typically changes twice while loading (from null to
+  // a real token), so two `fetchTrackerAccess` calls can be in flight at once. Without this, if
+  // the one WITHOUT a token (which answers `allowed: false`) takes longer than the one WITH it,
+  // its `.then` lands last and overwrites the good access with a closed gate. With the counter,
+  // only the response of the MOST RECENT request can touch the state; any other is discarded.
   const ultimaPeticion = useRef(0)
   const pedirAcceso = useRef(() => {})
   pedirAcceso.current = () => {
@@ -53,14 +53,15 @@ export function MachineTrackerPage() {
     pedirAcceso.current()
   }, [identityToken])
 
-  // Si el pase caduca (o CC deja de ver la apuesta) con la pantalla ya abierta, `PanelEv` recibe
-  // un 403 de `/gacha/ev*` y llama aquí: se vuelve a pedir el acceso, que al llegar `allowed:
-  // false` hace aparecer la puerta sola. No se pone `acceso` a `null` a mano porque eso enseñaría
-  // el "Measuring…" un instante, como si fuera la primera carga.
+  // If the pass expires (or Collector Crypt stops seeing the wager) while the screen is already
+  // open, `PanelEv` gets a 403 from `/gacha/ev*` and calls in here: access is asked for again,
+  // and when it comes back `allowed: false` the gate appears on its own. `acceso` is not set to
+  // `null` by hand, because that would flash "Measuring…" for an instant, as if this were the
+  // first load.
   //
-  // Identidad estable (useCallback con `[]`, apoyada en el ref de arriba): si cambiara en cada
-  // render de esta pantalla, el efecto de los dos carriles de `PanelEv` la tiene como dependencia
-  // y se reiniciaría sin motivo, perdiendo el primer tic del sondeo.
+  // Stable identity (useCallback with `[]`, leaning on the ref above): if it changed on every
+  // render of this screen, the effect behind `PanelEv`'s two lanes has it as a dependency and
+  // would restart for no reason, losing the first tick of the poll.
   const onSinAcceso = useCallback(() => pedirAcceso.current(), [])
 
   return (
@@ -113,8 +114,8 @@ function PanelEv({ token, acceso, onSinAcceso }: {
   // tocar localStorage constantemente.
   const [ocultas, setOcultas] = useState<Set<string>>(() => leerOcultas())
   const [orden, setOrden] = useState<string[]>(() => leerOrden())
-  // Qué tarjeta se está arrastrando. En un ref y no en estado: cambia en cada `dragover` y volver
-  // a pintar la rejilla entera a esa frecuencia hace que el arrastre se sienta pegajoso.
+  // Which card is being dragged. In a ref and not in state: it changes on every `dragover`, and
+  // repainting the whole grid at that rate makes the drag feel sticky.
   const arrastrando = useRef<string | null>(null)
   const [eligiendo, setEligiendo] = useState(false)
   const [modo, setModo] = useState<Modo>(() => leerModo())
@@ -136,13 +137,13 @@ function PanelEv({ token, acceso, onSinAcceso }: {
         .then((d) => { if (!cancelado) { setFilas(d.rows); setSello(d.updated_at); setFallo(false) } })
         .catch((e) => {
           if (cancelado) return
-          // Un 403 no es un fallo: es que el pase caducó (o dejó de contar la apuesta) con la
-          // pantalla abierta. Enseñar "Couldn't load the tracker" diría que algo se ha roto cuando
-          // no se ha roto nada; lo correcto es volver a la puerta.
+          // A 403 is not a failure: the pass expired (or the wager stopped counting) with the
+          // screen open. Showing "Couldn't load the tracker" would say something broke when
+          // nothing broke; the right move is to go back to the gate.
           if ((e as { status?: number })?.status === 403) { onSinAcceso(); return }
-          // Solo se da por fallida la PRIMERA carga: una vez hay tarjetas en pantalla, un sondeo
-          // que falle no debe borrarlas, porque lo de antes sigue siendo cierto y vaciar la
-          // pantalla por un fallo de red pasajero es peor que enseñarlo un minuto más viejo.
+          // Only the FIRST load counts as failed: once there are cards on screen, a failed poll
+          // must not wipe them, because what was there is still true, and emptying the screen
+          // over a passing network error is worse than showing it a minute staler.
           setFallo((antes) => antes || filasRef.current == null)
         })
     }
@@ -152,10 +153,10 @@ function PanelEv({ token, acceso, onSinAcceso }: {
         .then((d) => { if (!cancelado) setFilas((f) => (f ? aplicarVivo(f, d.rows) : f)) })
         .catch((e) => {
           if (cancelado) return
-          // Mismo trato que el carril lento: un 403 es la puerta, no un fallo de red que se pueda
-          // ignorar como el resto de errores de este carril.
+          // Same treatment as the slow lane: a 403 is the gate, not a network error that can be
+          // ignored like the rest of this lane's errors.
           if ((e as { status?: number })?.status === 403) { onSinAcceso(); return }
-          /* el carril rápido es un extra: si falla por otra razón, se sigue viendo lo del lento */
+          /* the fast lane is a bonus: if it fails for any other reason, the slow lane still shows */
         })
     }
 
@@ -178,12 +179,12 @@ function PanelEv({ token, acceso, onSinAcceso }: {
     guardarOcultas(siguiente)
   }
 
-  /** Marcar o desmarcar UNA máquina en el selector. Al marcarla, entra la última de la rejilla. */
+  /** Tick or untick ONE machine in the selector. Ticking it puts it last in the grid. */
   function alternarUna(code: string) {
     const seOculta = !ocultas.has(code)
     cambiar(alternar(ocultas, code))
-    // Al ocultar no se toca el orden: el código se queda sin efecto porque `ordenar` recibe las
-    // filas ya filtradas. Se comprobó mutando el código que limpiarlo no cambia nada.
+    // Hiding does not touch the order: the code simply has no effect, because `ordenar` gets the
+    // rows already filtered. Mutating the code proved that cleaning it up changes nothing.
     if (!seOculta) guardarYOrdenar(mostrarAlFinal(mostradas, orden, code))
   }
 
@@ -192,13 +193,13 @@ function PanelEv({ token, acceso, onSinAcceso }: {
     guardarOrden(siguiente)
   }
 
-  /** Soltar la tarjeta que se arrastra sobre `destino`. */
+  /** Drop the card being dragged onto `destino`. */
   function soltarSobre(destino: string) {
     const code = arrastrando.current
     arrastrando.current = null
     if (!code || code === destino) return
-    // El primer arrastre congela lo que hay en pantalla: una tarjeta que nunca se tocó no tiene
-    // posición, así que sin esto no habría nada que mover.
+    // The first drag freezes what is on screen: a card that was never touched has no position,
+    // so without this there would be nothing to move.
     const base = materializar(mostradas, orden)
     guardarYOrdenar(mover(base, base.indexOf(code), base.indexOf(destino)))
   }
@@ -242,9 +243,10 @@ function PanelEv({ token, acceso, onSinAcceso }: {
         }}>
           {rancio ? 'STALE · ' : 'UPDATED '}{horaActualizacion(sello)}
         </span>
-        {/* Solo por esta vía caduca de verdad: si entró apostando o de casa, la puerta se vuelve
-            a abrir sola en cuanto deje de cumplir esa condición, no en una fecha fija. Quien
-            compró un pase sí tiene una fecha, y es la única con la que puede planear. */}
+        {/* Only this route truly expires: whoever got in by wagering or on the house sees the
+            gate close again on its own as soon as they stop meeting that condition, not on a
+            fixed date. Whoever bought a pass does have a date, and it is the only one they can
+            plan around. */}
         {acceso?.via === 'pass' && acceso.pass_until && (
           <span style={{ fontFamily: FONTS.mono, fontSize: 10, color: COLORS.muted }}>
             PASS UNTIL {new Date(acceso.pass_until * 1000).toLocaleDateString()}
@@ -293,7 +295,7 @@ function PanelEv({ token, acceso, onSinAcceso }: {
           <div style={{ display: 'flex', gap: 8 }}>
             <button type="button" onClick={() => cambiar(new Set())} style={enlaceMini}>Show all</button>
             <button type="button" onClick={() => cambiar(new Set(filas.map((f) => f.machine)))} style={enlaceMini}>Hide all</button>
-            {/* Sin esto, deshacer un orden que no gusta obliga a arrastrarlo todo de vuelta. */}
+            {/* Without this, undoing an order you dislike means dragging everything back. */}
             {orden.length > 0 && (
               <button type="button" onClick={() => guardarYOrdenar([])} style={enlaceMini}>Reset order</button>
             )}

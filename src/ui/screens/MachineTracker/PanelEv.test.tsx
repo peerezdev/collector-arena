@@ -131,29 +131,29 @@ describe('PanelEv · las dos lecturas de la misma medición', () => {
   })
 })
 
-describe('PanelEv · el orden que le da el usuario', () => {
-  /** Los nombres de las tarjetas de la rejilla, en el orden en que se pintan. */
+describe('PanelEv · the order the user gives it', () => {
+  /** The names of the grid's cards, in the order they are painted. */
   const enPantalla = () =>
     screen.getAllByRole('article').map((a) => a.querySelector('span:nth-of-type(2)')?.textContent)
 
-  it('al entrar manda el orden del servidor', async () => {
+  it('on entry, the server order rules', async () => {
     render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
     await screen.findByRole('button', { name: /2 of 2 machines/i })
     expect(enPantalla()).toEqual(['Elite Pokémon', 'Anime Pop'])
   })
 
-  it('volver a marcar una máquina la manda AL FINAL', async () => {
-    // Es la ordenación por clicks que se pidió: desmarcas, marcas, y entra la última.
+  it('re-ticking a machine sends it to THE END', async () => {
+    // This is the click ordering that was asked for: untick, tick, and it comes back in last.
     render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
     await abrirSelector()
     const casilla = screen.getByRole('checkbox', { name: /Elite Pokémon/i })
     fireEvent.click(casilla)                              // se oculta
     await waitFor(() => expect(enPantalla()).toEqual(['Anime Pop']))
-    fireEvent.click(casilla)                              // vuelve, y va detrás
+    fireEvent.click(casilla)                              // back on, and it goes last
     await waitFor(() => expect(enPantalla()).toEqual(['Anime Pop', 'Elite Pokémon']))
   })
 
-  it('el orden sobrevive a recargar la página', async () => {
+  it('the order survives reloading the page', async () => {
     const { unmount } = render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
     await abrirSelector()
     const casilla = screen.getByRole('checkbox', { name: /Elite Pokémon/i })
@@ -167,8 +167,8 @@ describe('PanelEv · el orden que le da el usuario', () => {
     expect(enPantalla()).toEqual(['Anime Pop', 'Elite Pokémon'])
   })
 
-  it('una máquina nueva del servidor va DETRÁS de lo ya colocado, sin descolocarlo', async () => {
-    // La misma lógica que las ocultas: lo que el usuario no ha decidido, no se toca.
+  it('a new machine from the server goes BEHIND what is already placed, without displacing it', async () => {
+    // Same logic as the hidden ones: whatever the user has not decided is left alone.
     localStorage.setItem('ba.evTracker.orden', '["anime_75","pokemon_50"]')
     mocks.fetchEv.mockResolvedValue({
       rows: [fila('pokemon_50', 'Elite Pokémon'), fila('anime_75', 'Anime Pop'),
@@ -180,7 +180,7 @@ describe('PanelEv · el orden que le da el usuario', () => {
     expect(enPantalla()).toEqual(['Anime Pop', 'Elite Pokémon', 'Recién llegada'])
   })
 
-  it('"Reset order" devuelve el orden del servidor', async () => {
+  it('"Reset order" gives back the server order', async () => {
     localStorage.setItem('ba.evTracker.orden', '["anime_75","pokemon_50"]')
     render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
     await abrirSelector()
@@ -189,13 +189,13 @@ describe('PanelEv · el orden que le da el usuario', () => {
     expect(localStorage.getItem('ba.evTracker.orden')).toBe('[]')
   })
 
-  it('sin orden propio no se ofrece "Reset order"', async () => {
+  it('without an order of its own, "Reset order" is not offered', async () => {
     render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
     await abrirSelector()
     expect(screen.queryByRole('button', { name: /reset order/i })).toBeNull()
   })
 
-  it('cada tarjeta enlaza a sus tiradas, con la máquina ya filtrada', async () => {
+  it('each card links to its pulls, with the machine already filtered', async () => {
     render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
     const enlaces = await screen.findAllByRole('link', { name: /recent pulls/i })
     expect(enlaces.map((a) => a.getAttribute('href')))
@@ -203,20 +203,20 @@ describe('PanelEv · el orden que le da el usuario', () => {
   })
 })
 
-describe('PanelEv · arrastrar una tarjeta', () => {
+describe('PanelEv · dragging a card', () => {
   const enPantalla = () =>
     screen.getAllByRole('article').map((a) => a.querySelector('span:nth-of-type(2)')?.textContent)
 
   const arrastrar = (desde: number, hasta: number) => {
     const tarjetas = screen.getAllByRole('article')
     fireEvent.dragStart(tarjetas[desde])
-    // El contenedor es quien escucha el soltar; la tarjeta solo arranca el arrastre.
+    // The container is what listens for the drop; the card only starts the drag.
     const destino = tarjetas[hasta].parentElement as HTMLElement
     fireEvent.dragOver(destino)
     fireEvent.drop(destino)
   }
 
-  it('soltar una tarjeta sobre otra la coloca ahí', async () => {
+  it('dropping a card onto another places it there', async () => {
     render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
     await screen.findByRole('button', { name: /2 of 2 machines/i })
     expect(enPantalla()).toEqual(['Elite Pokémon', 'Anime Pop'])
@@ -224,9 +224,9 @@ describe('PanelEv · arrastrar una tarjeta', () => {
     await waitFor(() => expect(enPantalla()).toEqual(['Anime Pop', 'Elite Pokémon']))
   })
 
-  it('el primer arrastre coloca TODAS, no solo la movida', async () => {
-    // Sin materializar, la tarjeta movida sería la única con posición y las demás quedarían
-    // detrás en el orden del servidor, que es justo lo que se acaba de deshacer.
+  it('the first drag places ALL of them, not just the one moved', async () => {
+    // Without materialising, the moved card would be the only one with a position and the rest
+    // would trail behind in the server's order, which is exactly what was just undone.
     render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
     await screen.findByRole('button', { name: /2 of 2 machines/i })
     arrastrar(0, 1)
@@ -234,15 +234,15 @@ describe('PanelEv · arrastrar una tarjeta', () => {
       expect(localStorage.getItem('ba.evTracker.orden')).toBe('["anime_75","pokemon_50"]'))
   })
 
-  it('soltar una tarjeta sobre sí misma no cambia nada', async () => {
+  it('dropping a card onto itself changes nothing', async () => {
     render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
     await screen.findByRole('button', { name: /2 of 2 machines/i })
     arrastrar(1, 1)
     await waitFor(() => expect(enPantalla()).toEqual(['Elite Pokémon', 'Anime Pop']))
   })
 
-  it('soltar sin haber arrastrado nada no reordena', async () => {
-    // Un `drop` puede llegar de fuera del navegador (un fichero, una selección de texto).
+  it('dropping without having dragged anything does not reorder', async () => {
+    // A `drop` can arrive from outside the browser (a file, a text selection).
     render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
     await screen.findByRole('button', { name: /2 of 2 machines/i })
     const destino = screen.getAllByRole('article')[1].parentElement as HTMLElement

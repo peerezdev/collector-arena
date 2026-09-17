@@ -123,14 +123,14 @@ class Settings(BaseSettings):
     # y no hay ninguna vía por la que un jugador se añada solo. env: TRACKER_ACCESS_ALLOWLIST
     tracker_access_allowlist: str = ""
 
-    # Pase de pago del Machine Tracker, la vía alternativa al wager de 100 USDC.
-    # CERO APAGA LA COMPRA, igual que `gacha_base_url` vacío apaga el gacha: así esto se puede
-    # desplegar antes de haber decidido el precio, sin ofrecer nada a medias.
+    # Machine Tracker paid pass, the alternative path to the 100 USDC wager.
+    # ZERO TURNS THE PURCHASE OFF, same as an empty `gacha_base_url` turns off the gacha: this way
+    # it can be deployed before the price has been decided, without offering anything half done.
     tracker_pass_7d_usdc: float = 0.0      # env: TRACKER_PASS_7D_USDC
     tracker_pass_30d_usdc: float = 0.0     # env: TRACKER_PASS_30D_USDC
-    # Freno de peticiones de la compra, por wallet y ventana. Existe por lo mismo que el del
-    # withdraw: cada intento mueve USDC de verdad y hace que el operador pague gas (y, la primera
-    # vez, la renta de la ATA de destino). Contadores propios, no compartidos con withdraw ni tip.
+    # Rate limit on purchase requests, per wallet and window. Exists for the same reason as the
+    # withdraw one: every attempt moves real USDC and makes the operator pay gas (and, the first
+    # time, the destination ATA's rent). Its own counters, not shared with withdraw or tip.
     tracker_pass_rate_limit: int = 5        # env: TRACKER_PASS_RATE_LIMIT
     tracker_pass_rate_window_s: float = 60.0  # env: TRACKER_PASS_RATE_WINDOW_S
 
@@ -144,17 +144,18 @@ class Settings(BaseSettings):
 
 
 def avisar_precios_raros(s7: float, s30: float) -> Optional[str]:
-    """Si el pase de 30 días sale MÁS CARO por día que el de 7, devuelve el aviso.
+    """If the 30 day pass works out MORE EXPENSIVE per day than the 7 day one, returns the warning.
 
-    No es un error que deba impedir arrancar: el precio es una decisión de negocio y quizá alguien
-    lo quiere así por un tiempo. Pero es un fallo de configuración que, sin este aviso, solo
-    descubre el cliente que eche la cuenta, y para entonces ya ha comprado el caro.
+    It is not an error that should prevent startup: the price is a business decision and maybe
+    someone wants it that way for a while. But it is a configuration mistake that, without this
+    warning, only the customer who does the math discovers, and by then they have already bought
+    the expensive one.
     """
     if s7 <= 0 or s30 <= 0:
-        return None                       # con la vía apagada no hay nada que comparar
+        return None                       # with the path off there is nothing to compare
     if s30 / 30.0 > s7 / 7.0:
-        return (f"TRACKER_PASS_30D_USDC ({s30}) sale a {s30 / 30:.3f}/día, más caro que "
-                f"TRACKER_PASS_7D_USDC ({s7}) a {s7 / 7:.3f}/día")
+        return (f"TRACKER_PASS_30D_USDC ({s30}) works out at {s30 / 30:.3f}/day, dearer than "
+                f"TRACKER_PASS_7D_USDC ({s7}) at {s7 / 7:.3f}/day")
     return None
 
 

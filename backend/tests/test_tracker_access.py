@@ -197,53 +197,53 @@ class TestListaBlanca:
 
 
 class TestPase:
-    """El pase de pago, la segunda vía de acceso.
+    """The paid pass, the second path to access.
 
-    Se prueba pasando `pase_hasta` directamente: quién lo calcula (`tracker_pass.pase_vigente`)
-    ya tiene sus propios tests, y aquí solo importa qué hace la puerta con ese dato.
+    Tested by passing `pase_hasta` directly: whoever computes it (`tracker_pass.pase_vigente`)
+    already has its own tests, and here all that matters is what the gate does with that data.
     """
 
-    def test_un_pase_vigente_abre_la_puerta_sin_haber_apostado(self, Session):
+    def test_an_active_pass_opens_the_door_without_having_wagered(self, Session):
         with Session() as s:
             r = acceso(s, YO, pase_hasta=AHORA + timedelta(days=3), ahora=AHORA)
             assert r["allowed"] is True
             assert r["via"] == "pass"
             assert r["pass_until"] == int((AHORA + timedelta(days=3)).timestamp())
 
-    def test_el_pase_NO_falsea_lo_apostado(self, Session):
-        # Por lo mismo que no lo falsea la lista blanca: esa cifra también se enseña, y mentirla
-        # haría mentirosa a la pantalla entera.
+    def test_the_pass_does_NOT_falsify_the_wagered_amount(self, Session):
+        # For the same reason the whitelist does not falsify it either: that figure is also
+        # shown, and lying about it would make the whole screen a liar.
         with Session() as s:
             r = acceso(s, YO, pase_hasta=AHORA + timedelta(days=3), ahora=AHORA)
             assert r["wagered_usd"] == 0.0
             assert r["missing_usd"] == 100.0
 
-    def test_sin_pase_y_sin_wager_sigue_cerrada(self, Session):
+    def test_without_a_pass_and_without_a_wager_it_stays_closed(self, Session):
         with Session() as s:
             r = acceso(s, YO, pase_hasta=None, ahora=AHORA)
             assert r["allowed"] is False
             assert r["via"] is None
 
-    def test_el_orden_de_los_motivos_es_casa_pase_wager(self, Session):
-        # `via` tiene que decir el motivo REAL, del más fuerte al más débil, para poder explicarlo
-        # en pantalla y para poder depurar por qué alguien entra.
+    def test_the_order_of_reasons_is_house_pass_wager(self, Session):
+        # `via` has to state the REAL reason, from strongest to weakest, so it can be explained
+        # on screen and so it is possible to debug why someone gets in.
         with Session() as s:
             r = acceso(s, YO, pase_hasta=AHORA + timedelta(days=3), lista_blanca={YO}, ahora=AHORA)
             assert r["via"] == "house"
 
-    def test_un_pase_caducado_no_abre_nada(self, Session):
-        # `pase_hasta` en el pasado lo resuelve `pase_vigente`, pero la puerta no puede fiarse.
+    def test_an_expired_pass_opens_nothing(self, Session):
+        # `pase_hasta` in the past is resolved by `pase_vigente`, but the gate cannot rely on it.
         with Session() as s:
             r = acceso(s, YO, pase_hasta=AHORA - timedelta(seconds=1), ahora=AHORA)
             assert r["allowed"] is False
             assert r["via"] is None
 
-    def test_los_precios_viajan_en_la_respuesta_para_poder_pintarlos(self, Session):
+    def test_the_prices_travel_in_the_response_so_they_can_be_rendered(self, Session):
         with Session() as s:
             r = acceso(s, YO, precios={"7": 10.0, "30": 30.0}, ahora=AHORA)
             assert r["pass_prices"] == {"7": 10.0, "30": 30.0}
 
-    def test_sin_precios_configurados_el_bloque_de_compra_no_existe(self, Session):
-        # Diccionario vacío y no ceros: la pantalla no tiene que saber que cero significa apagado.
+    def test_without_prices_configured_the_purchase_block_does_not_exist(self, Session):
+        # Empty dictionary and not zeros: the screen does not have to know that zero means off.
         with Session() as s:
             assert acceso(s, YO, ahora=AHORA)["pass_prices"] == {}

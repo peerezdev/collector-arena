@@ -27,9 +27,9 @@ BLOCKHASH = "11111111111111111111111111111111"             # 32-zero-byte hash, 
 
 TOKEN_2022 = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
 
-# Claves de usar y tirar para poder FIRMAR de verdad en los tests de `leer_firma`: sin la clave
-# privada no hay forma de rellenar una ranura de firma, y con una firma de mentira no se podría
-# distinguir "firmada" de "sin firmar", que es justo lo que hay que probar.
+# Throwaway keys to be able to really SIGN in the `leer_firma` tests: without the private key
+# there is no way to fill in a signature slot, and with a fake signature it would not be possible
+# to tell "signed" apart from "unsigned", which is exactly what needs to be tested.
 OPERADOR = Keypair()
 OPERADOR_PUB = str(OPERADOR.pubkey())
 JUGADOR = Keypair()
@@ -242,49 +242,52 @@ class TestMultiTransferFeeSplit:
 
 
 # ---------------------------------------------------------------------------
-# leer_firma — la firma vive DENTRO de la transacción, no la inventa el RPC
+# leer_firma: the signature lives INSIDE the transaction, the RPC does not invent it
 # ---------------------------------------------------------------------------
 class TestLeerFirma:
-    """Poder leer la firma antes de enviar es lo que permite anotar en la base "voy a enviar ESTA
-    transacción" ANTES de enviarla. Lo único que hay que blindar es que no confunda una
-    transacción SIN firmar —cuya ranura son 64 ceros, que en base58 se ven como un `1111…`
-    perfectamente presentable— con una firmada."""
+    """Being able to read the signature before sending is what allows recording in the database
+    "I'm about to send THIS transaction" BEFORE sending it. The only thing that needs guarding is
+    that it does not mistake an UNSIGNED transaction (whose slot is 64 zeros, which in base58
+    look like a perfectly presentable `1111…`) for a signed one."""
 
     def _tx_sin_firmar(self):
-        # Calca la del cobro: el jugador es la autoridad del USDC y el operador paga la fee, así
-        # que la transacción lleva DOS firmantes y el de la ranura 0 es el operador.
+        # Mirrors the charge's: the player is the USDC authority and the operator pays the fee,
+        # so the transaction carries TWO signers and the one in slot 0 is the operator.
         return build_token_transfer(JUGADOR_PUB, DEST, MINT, BLOCKHASH,
                                     amount=10, decimals=6, fee_payer=OPERADOR_PUB)
 
-    def test_una_tx_SIN_firmar_no_cuela_como_firmada(self):
-        # La trampa entera de este helper: `str(Signature.default())` es "1111…", una cadena que
-        # parece una firma y que guardada en la base sería imposible de reconciliar con nada.
-        with pytest.raises(ValueError, match="no está firmada"):
+    def test_an_UNSIGNED_tx_does_not_pass_as_signed(self):
+        # The whole trap this helper guards against: `str(Signature.default())` is "1111…", a
+        # string that looks like a signature and that, saved to the database, would be
+        # impossible to reconcile with anything.
+        with pytest.raises(ValueError, match="is not signed"):
             leer_firma(self._tx_sin_firmar())
 
-    def test_una_tx_firmada_devuelve_SU_firma(self):
+    def test_a_signed_tx_returns_ITS_signature(self):
         tx = Transaction.from_bytes(base64.b64decode(self._tx_sin_firmar()))
         tx.partial_sign([OPERADOR], tx.message.recent_blockhash)
         firmada = base64.b64encode(bytes(tx)).decode()
 
         firma = leer_firma(firmada)
         assert firma == str(tx.signatures[0])
-        assert set(firma) != {"1"}, "no es la firma de ceros"
-        # Y es la del FEE PAYER, que es la que el RPC devolvería como resultado de sendTransaction:
-        # `signatures[i]` corresponde a `account_keys[i]`, y `account_keys[0]` es quien paga.
+        assert set(firma) != {"1"}, "not the all-zeros signature"
+        # And it is the FEE PAYER's, which is the one the RPC would return as the result of
+        # sendTransaction: `signatures[i]` corresponds to `account_keys[i]`, and `account_keys[0]`
+        # is whoever pays.
         assert tx.message.account_keys[0] == OPERADOR.pubkey()
 
-    def test_firmar_SOLO_al_otro_firmante_no_basta(self):
-        # La transacción del cobro lleva dos firmantes: el jugador (autoridad del USDC) y el
-        # operador (fee payer). Si solo firmara el jugador, la ranura 0 seguiría a ceros y la
-        # transacción no sería enviable — devolver "una firma" ahí sería mentir.
+    def test_signing_ONLY_with_the_other_signer_is_not_enough(self):
+        # The charge's transaction carries two signers: the player (USDC authority) and the
+        # operator (fee payer). If only the player signed, slot 0 would still be at zeros and
+        # the transaction would not be sendable: returning "a signature" there would be a lie.
         tx = Transaction.from_bytes(base64.b64decode(self._tx_sin_firmar()))
         tx.partial_sign([JUGADOR], tx.message.recent_blockhash)
-        with pytest.raises(ValueError, match="no está firmada"):
+        with pytest.raises(ValueError, match="is not signed"):
             leer_firma(base64.b64encode(bytes(tx)).decode())
 
-    def test_algo_que_no_es_una_transaccion_falla_claro(self):
-        # Si Privy devolviera basura, mejor un ValueError explícito que un IndexError a saber
-        # dónde: quien llama lo trata como "no se pudo preparar el cobro" y no deja rastro.
-        with pytest.raises(ValueError, match="no se pudo interpretar"):
-            leer_firma("esto-no-es-base64-de-una-tx")
+    def test_something_that_is_not_a_transaction_fails_clearly(self):
+        # If Privy returned garbage, an explicit ValueError is better than an IndexError from who
+        # knows where: the caller treats it as "the charge could not be prepared" and leaves no
+        # trace.
+        with pytest.raises(ValueError, match="could not parse"):
+            leer_firma("this-is-not-base64-of-a-tx")

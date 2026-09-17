@@ -103,16 +103,16 @@ function GapsPorRareza({ machine }: { machine: string }) {
 
 export function WinnersPage() {
   const { machines } = useMachineList()
-  // La máquina vive en la URL, no en estado local. Así el tracker puede enlazar aquí una máquina
-  // concreta ("RECENT PULLS" de cada tarjeta), y de paso el filtro se puede compartir y sobrevive
-  // a recargar la página. El resto de filtros no: son de esta visita.
+  // The machine lives in the URL, not in local state. That lets the tracker link here for one
+  // specific machine (each card's "RECENT PULLS"), and as a bonus the filter can be shared and
+  // survives a page reload. The other filters do not: they belong to this visit.
   const [params, setParams] = useSearchParams()
   const maquina = params.get('machine') ?? ''
   const setMaquina = (code: string) => {
     setParams((antes) => {
       const p = new URLSearchParams(antes)
       if (code) p.set('machine', code)
-      else p.delete('machine')     // sin máquina no se deja `?machine=` colgando en la barra
+      else p.delete('machine')     // with no machine, do not leave `?machine=` dangling in the bar
       return p
     }, { replace: true })
   }

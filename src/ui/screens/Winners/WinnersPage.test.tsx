@@ -90,20 +90,20 @@ describe('WinnersPage', () => {
       expect(mocks.fetchWinners).toHaveBeenLastCalledWith(expect.objectContaining({ machine: 'pokemon_50' })))
   })
 
-  it('la máquina se puede traer en la URL, que es como enlaza el tracker', async () => {
-    // Cada tarjeta del Machine Tracker enlaza a /winners?machine=<code>. Si la página ignorara el
-    // parámetro, el botón "RECENT PULLS" traería aquí las tiradas de TODAS las máquinas y nadie
-    // notaría que el filtro no se aplicó.
+  it('the machine can be brought in through the URL, which is how the tracker links to it', async () => {
+    // Every Machine Tracker card links to /winners?machine=<code>. If the page ignored the
+    // parameter, the "RECENT PULLS" button would bring the pulls of EVERY machine here and nobody
+    // would notice the filter was not applied.
     render(
       <MemoryRouter initialEntries={['/winners?machine=pokemon_50']}><WinnersPage /></MemoryRouter>,
     )
     await waitFor(() =>
       expect(mocks.fetchWinners).toHaveBeenLastCalledWith(expect.objectContaining({ machine: 'pokemon_50' })))
-    // Y el desplegable lo refleja, para que se vea POR QUÉ la lista está filtrada.
+    // And the dropdown reflects it, so it is visible WHY the list is filtered.
     expect((screen.getByLabelText('Machine') as HTMLSelectElement).value).toBe('pokemon_50')
   })
 
-  it('elegir máquina a mano la lleva a la URL, para poder compartir el filtro', async () => {
+  it('picking a machine by hand carries it into the URL, so the filter can be shared', async () => {
     render(<MemoryRouter><WinnersPage /></MemoryRouter>)
     await waitFor(() => expect(mocks.fetchWinners).toHaveBeenCalled())
     fireEvent.change(screen.getByLabelText('Machine'), { target: { value: 'pokemon_50' } })

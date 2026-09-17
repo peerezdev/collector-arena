@@ -132,27 +132,27 @@ describe('PanelEv · los dos carriles del refresco', () => {
   })
 })
 
-describe('PanelEv · el orden propio y el refresco', () => {
+describe('PanelEv · the user\'s own order and the refresh', () => {
   const otra = { ...fila, machine: 'anime_75', name: 'Anime Pop', realized_edge_pct: -6 }
   const enPantalla = () =>
     screen.getAllByRole('article').map((a) => a.querySelector('span:nth-of-type(2)')?.textContent)
 
-  it('el orden del usuario SOBREVIVE al refresco, aunque cambie el edge', async () => {
-    // El servidor ordena por edge, así que sin orden propio la rejilla se recoloca sola cada 10 s
-    // y las tarjetas bailan mientras las estás leyendo. Con orden propio, se queda quieta.
+  it('the user\'s order SURVIVES the refresh, even if the edge changes', async () => {
+    // The server sorts by edge, so without an order of your own the grid rearranges itself every
+    // 10 s and the cards dance while you are reading them. With your own order, it stays put.
     localStorage.setItem('ba.evTracker.orden', '["anime_75","pokemon_50"]')
     mocks.fetchEv.mockResolvedValue({ rows: [fila, otra], updated_at: 0 })
     render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
     await avanzar(0)
     expect(enPantalla()).toEqual(['Anime Pop', 'Elite Pokémon'])
 
-    // El servidor cambia de opinión y las manda al revés.
+    // The server changes its mind and sends them the other way round.
     mocks.fetchEv.mockResolvedValue({ rows: [otra, fila], updated_at: 0 })
     await avanzar(60_000)
     expect(enPantalla()).toEqual(['Anime Pop', 'Elite Pokémon'])
   })
 
-  it('sin orden propio se sigue respetando al servidor', async () => {
+  it('without an order of its own, the server is still respected', async () => {
     mocks.fetchEv.mockResolvedValue({ rows: [fila, otra], updated_at: 0 })
     render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
     await avanzar(0)
@@ -164,16 +164,16 @@ describe('PanelEv · el orden propio y el refresco', () => {
   })
 })
 
-describe('PanelEv · un 403 en cualquiera de los dos carriles lleva a la puerta', () => {
+describe('PanelEv · a 403 on either lane leads to the gate', () => {
   const accesoOk = { allowed: true, wagered_usd: 500, required_usd: 100, missing_usd: 0, window_days: 7 }
   const accesoCerrado = { allowed: false, wagered_usd: 0, required_usd: 100, missing_usd: 100, window_days: 7 }
   const error403 = () => Object.assign(new Error('tracker_locked'), { status: 403 })
 
-  /** El montaje SIEMPRE tiene que dar acceso (si no, no hay `PanelEv` con el que probar nada); solo
-   *  una llamada POSTERIOR a `fetchTrackerAccess` — la que dispara `onSinAcceso` — puede cerrar la
-   *  puerta. Contar llamadas en vez de encadenar `mockResolvedValueOnce` evita depender de CUÁNTAS
-   *  veces se llama antes de la que importa, que es justo lo que el mutante del test de control
-   *  pondría en duda. */
+  /** Mounting must ALWAYS grant access (otherwise there is no `PanelEv` to test anything with);
+   *  only a LATER call to `fetchTrackerAccess`, the one `onSinAcceso` fires, can close the gate.
+   *  Counting calls instead of chaining `mockResolvedValueOnce` avoids depending on HOW MANY
+   *  times it is called before the one that matters, which is exactly what the control test's
+   *  mutant would call into question. */
   const accesoSegúnLlamada = () => {
     let llamadas = 0
     mocks.fetchAcceso.mockImplementation(() => {
@@ -183,13 +183,14 @@ describe('PanelEv · un 403 en cualquiera de los dos carriles lleva a la puerta'
   }
 
   afterEach(() => {
-    // Este describe sustituye la respuesta por defecto de `fetchAcceso` por una que cuenta
-    // llamadas; se restaura al valor fijo del resto del fichero para no colarse en otro test.
+    // This describe swaps `fetchAcceso`'s default response for one that counts calls; it is
+    // restored to the fixed value the rest of the file uses so it does not leak into another
+    // test.
     mocks.fetchAcceso.mockReset()
     mocks.fetchAcceso.mockResolvedValue({ allowed: true, wagered_usd: 500, required_usd: 100, missing_usd: 0, window_days: 7 })
   })
 
-  it('el carril lento devuelve 403 → aparece la puerta, no el aviso de fallo', async () => {
+  it('the slow lane returns 403 → the gate appears, not the failure notice', async () => {
     accesoSegúnLlamada()
     render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
     await avanzar(0)
@@ -197,17 +198,17 @@ describe('PanelEv · un 403 en cualquiera de los dos carriles lleva a la puerta'
 
     mocks.fetchEv.mockRejectedValueOnce(error403())
     await avanzar(60_000)
-    // Segundo tirón de reloj: el 403 dispara `onSinAcceso`, que hace un `fetchTrackerAccess`
-    // nuevo y ENCADENADO (no atado a ningún temporizador); con temporizadores falsos, `avanzar`
-    // solo garantiza vaciar lo que cuelga del tic que acaba de correr, así que este segundo
-    // `avanzar(0)` es el que vacía esa segunda promesa y deja pintada la puerta.
+    // Second turn of the clock: the 403 fires `onSinAcceso`, which makes a new and CHAINED
+    // `fetchTrackerAccess` (not tied to any timer). With fake timers, `avanzar` only guarantees
+    // draining whatever hangs off the tick that just ran, so this second `avanzar(0)` is the one
+    // that drains that second promise and leaves the gate painted.
     await avanzar(0)
 
     expect(screen.getByText(/to go/i)).toBeTruthy()
     expect(screen.queryByText(/Couldn't load the tracker/i)).toBeNull()
   })
 
-  it('el carril rápido devuelve 403 → aparece la puerta, no el aviso de fallo', async () => {
+  it('the fast lane returns 403 → the gate appears, not the failure notice', async () => {
     accesoSegúnLlamada()
     render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
     await avanzar(0)
@@ -215,17 +216,17 @@ describe('PanelEv · un 403 en cualquiera de los dos carriles lleva a la puerta'
 
     mocks.fetchEvLive.mockRejectedValueOnce(error403())
     await avanzar(10_000)
-    await avanzar(0) // ver el comentario del test del carril lento
+    await avanzar(0) // see the comment in the slow lane test
 
     expect(screen.getByText(/to go/i)).toBeTruthy()
     expect(screen.queryByText(/Couldn't load the tracker/i)).toBeNull()
   })
 
-  it('un fallo que NO es 403 en la primera carga enseña el aviso, no la puerta', async () => {
-    // Control: sin este test, los dos de arriba podrían pasar con un `catch` que mandara
-    // CUALQUIER error a la puerta, no solo el 403. Aquí un error de red de verdad en la
-    // PRIMERA carga tiene que dar el aviso de avería, y la puerta debe seguir cerrada... es
-    // decir, sin abrirse ni cerrarse: el acceso ya concedido no debe tocarse.
+  it('a failure that is NOT a 403 on the first load shows the notice, not the gate', async () => {
+    // Control: without this test, the two above could pass with a `catch` that sent ANY error
+    // to the gate, not just the 403. Here a real network error on the FIRST load has to produce
+    // the breakage notice, and the gate must stay as it was, that is, neither opening nor
+    // closing: access already granted must not be touched.
     accesoSegúnLlamada()
     mocks.fetchEv.mockRejectedValueOnce(new Error('sin red'))
     render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)

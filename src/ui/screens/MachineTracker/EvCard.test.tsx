@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { render as renderRaw, screen, cleanup } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 
-// La tarjeta enlaza a Winners con su máquina filtrada, así que necesita router para montarse.
+// The card links to Winners with its machine filtered, so it needs a router to mount.
 const render = (ui: React.ReactElement) => renderRaw(<MemoryRouter>{ui}</MemoryRouter>)
 
 import { EvCard } from './EvCard'

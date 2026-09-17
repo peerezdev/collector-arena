@@ -253,68 +253,73 @@ def build_token_multi_transfer(
 
 
 def leer_firma(signed_tx_b64: str) -> str:
-    """La firma (el "txid") de una transacción YA FIRMADA, leída EN LOCAL y sin tocar la red.
+    """The signature (the "txid") of a transaction that is ALREADY SIGNED, read LOCALLY and
+    without touching the network.
 
-    POR QUÉ EXISTE. El identificador de una transacción de Solana ES su primera firma, y esa firma
-    viaja DENTRO de los bytes que se mandan: no la inventa el RPC al recibirla. Poder leerla antes
-    de enviar es lo que permite anotar en la base "voy a enviar ESTA transacción" ANTES de
-    enviarla — y por tanto no depender de que el envío conteste para saber qué mirar en un
-    explorador si el envío se queda a medias.
+    WHY IT EXISTS. A Solana transaction's identifier IS its first signature, and that signature
+    travels INSIDE the bytes that get sent: the RPC does not invent it upon receiving it. Being
+    able to read it before sending is what lets us record in the database "I'm about to send THIS
+    transaction" BEFORE sending it, and therefore not depend on the send answering back to know
+    what to look up on an explorer if the send gets stuck halfway.
 
-    Es la primera firma y no otra porque `account_keys[0]` de un mensaje de Solana es siempre
-    quien paga la fee, y `signatures[i]` corresponde a `account_keys[i]`: la ranura 0 es la del
-    fee payer, que es la que el RPC devuelve como resultado de `sendTransaction`.
+    It is the first signature and no other because a Solana message's `account_keys[0]` is
+    always whoever pays the fee, and `signatures[i]` corresponds to `account_keys[i]`: slot 0 is
+    the fee payer's, which is what the RPC returns as the result of `sendTransaction`.
 
-    UNA TX SIN FIRMAR NO ES UN ERROR SILENCIOSO. `Transaction.new_unsigned` deja esa ranura a
-    ceros, y una firma de ceros se serializa a un base58 `1111…` que parece una cadena
-    perfectamente válida. Guardarla sería peor que fallar: dejaría en la base una firma que no
-    existe en ninguna cadena y que nadie podría reconciliar nunca. Por eso se rechaza a propósito.
+    AN UNSIGNED TX IS NOT A SILENT ERROR. `Transaction.new_unsigned` leaves that slot at zeros,
+    and a signature of zeros serializes to a base58 `1111…` that looks like a perfectly valid
+    string. Storing it would be worse than failing: it would leave in the database a signature
+    that exists on no chain and that nobody could ever reconcile. That is why it is rejected on
+    purpose.
     """
     try:
         tx = Transaction.from_bytes(base64.b64decode(signed_tx_b64))
-    except Exception as e:                       # base64 roto, bytes que no son una transacción…
-        raise ValueError("no se pudo interpretar la transacción firmada: %s" % e)
+    except Exception as e:                       # broken base64, bytes that are not a transaction…
+        raise ValueError("could not parse the signed transaction: %s" % e)
     firmas = tx.signatures
     if not firmas or firmas[0] == Signature.default():
-        raise ValueError("la transacción no está firmada: la ranura del fee payer está a ceros")
+        raise ValueError("the transaction is not signed: the fee payer slot is all zeros")
     return str(firmas[0])
 
 
 async def confirmar_firma(rpc_url: str, firma: str, *, intentos: int = 10,
                           espera_s: float = 1.5, timeout_s: float = 20.0) -> Optional[bool]:
-    """Si esa transacción llegó a la cadena y salió BIEN. Tri-estado, no booleano.
+    """Whether that transaction reached the chain and came out WELL. Tri-state, not boolean.
 
-    Existe porque `submit_signed_tx` solo envía: devuelve la firma sin esperar nada. Dar por
-    cobrado un envío es regalar el pase cada vez que una transacción se cae después de salir.
+    Exists because `submit_signed_tx` only sends: it returns the signature without waiting for
+    anything. Treating a send as charged is giving away the pass every time a transaction falls
+    over after going out.
 
-    Devuelve tres cosas distintas, y quien llama las trata distinto:
+    Returns three different things, and whoever calls it treats them differently:
 
-      · `True`: confirmada o finalizada, sin error. El dinero se movió.
-      · `False`: RECHAZO DEFINITIVO. La cadena la aceptó y la ejecutó MAL (`err` presente). El
-        dinero NO se movió, y eso es una certeza, no una sospecha.
-      · `None`: INDETERMINADO. Se agotaron los intentos sin ver ni un `err` ni una confirmación:
-        red que nunca respondió, RPC que nunca vio la firma, o una transacción que se quedó en
-        `processed` sin asentarse. El dinero PUEDE haberse movido.
+      · `True`: confirmed or finalized, no error. The money moved.
+      · `False`: DEFINITIVE REJECTION. The chain accepted it and executed it BADLY (`err`
+        present). The money did NOT move, and that is a certainty, not a suspicion.
+      · `None`: INDETERMINATE. The retries ran out without seeing either an `err` or a
+        confirmation: a network that never answered, an RPC that never saw the signature, or a
+        transaction that stayed at `processed` without settling. The money MAY have moved.
 
-    Antes esto devolvía `False` también para el caso indeterminado, y eso mentía: juntaba "seguro
-    que no" con "ni idea" en el mismo valor, y quien llamaba no podía tratarlas distinto —
-    exactamente el fallo que dejaba a alguien cobrado, sin acceso y sin ninguna firma que
-    reconciliar (nada distinguía ese caso de un rechazo limpio). Aquí solo se cuenta lo que se
-    sabe; decidir qué hacer con la incertidumbre es cosa de quien llama.
+    This used to return `False` for the indeterminate case too, and that was a lie: it lumped
+    "definitely not" together with "no idea" into the same value, and the caller could not treat
+    them differently (exactly the failure that left someone charged, without access, and without
+    any signature to reconcile, since nothing distinguished that case from a clean rejection).
+    Here only what is known gets reported; deciding what to do with the uncertainty is up to the
+    caller.
 
-    Dos cosas más que parecen detalles y no lo son:
+    Two more things that look like details and are not:
 
-      · `processed` no basta: puede revertirse. Solo valen `confirmed` y `finalized`; lo demás
-        (incluido quedarse en `processed` hasta agotar los intentos) es indeterminado.
-      · Un cuerpo que no es JSON (200 con HTML de un proxy caído, respuesta vacía bajo carga...)
-        cuenta como el mismo "todavía no lo sé": `r.json()` puede lanzar `json.JSONDecodeError`,
-        que NO es subclase de `httpx.HTTPError`, así que hay que capturarla aparte para no
-        dejarla escapar.
+      · `processed` is not enough: it can be reverted. Only `confirmed` and `finalized` count;
+        everything else (including staying at `processed` until the retries run out) is
+        indeterminate.
+      · A body that is not JSON (a 200 with HTML from a downed proxy, an empty response under
+        load...) counts as the same "I still don't know": `r.json()` can raise a
+        `json.JSONDecodeError`, which is NOT a subclass of `httpx.HTTPError`, so it has to be
+        caught separately so it does not slip through.
 
-    `intentos` / `espera_s` / `timeout_s` son ajustables porque quien llama sabe mejor que esta
-    función cuánto presupuesto total puede permitirse: una petición HTTP normal (sin proxy que
-    aguante minutos delante) necesita un total mucho más corto que confirmar con calma una
-    reconciliación en segundo plano.
+    `intentos` / `espera_s` / `timeout_s` are adjustable because the caller knows better than
+    this function how much total budget it can afford: a normal HTTP request (with no proxy that
+    can hold on for minutes) needs a much shorter total than calmly confirming a background
+    reconciliation.
     """
     for intento in range(intentos):
         if intento:
@@ -333,7 +338,7 @@ async def confirmar_firma(rpc_url: str, firma: str, *, intentos: int = 10,
         if not valor:
             continue
         if valor.get("err"):
-            return False            # se ejecutó y falló: el dinero NO se movió
+            return False            # it executed and failed: the money did NOT move
         if valor.get("confirmationStatus") in ("confirmed", "finalized"):
             return True
-    return None                     # agotados los intentos sin veredicto: INDETERMINADO
+    return None                     # retries ran out with no verdict: INDETERMINATE

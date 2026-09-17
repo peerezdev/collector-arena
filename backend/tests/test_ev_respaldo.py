@@ -1,13 +1,14 @@
-"""Qué enseña `GET /gacha/ev` cuando Collector Crypt no contesta.
+"""What `GET /gacha/ev` shows when Collector Crypt doesn't answer.
 
-El endpoint necesita a CC para UNA cosa: la lista de máquinas con su precio y su recompra. Las
-mediciones son nuestras, están en nuestra base de datos y no dependen de nadie. Aun así, hasta
-ahora un fallo de CC se convertía en un 502 y la pantalla entera decía "Couldn't load the tracker",
-tirando datos que teníamos delante.
+The endpoint needs CC for ONE thing: the list of machines with their price and buyback. The
+measurements are ours, they live in our database and don't depend on anyone. Even so, until now
+a CC failure turned into a 502 and the whole screen said "Couldn't load the tracker", throwing
+away data we already had in front of us.
 
-La única protección eran dos cachés de sesenta segundos, así que bastaba un minuto de CC caído para
-quedarnos sin tracker. Esto es lo que lo sustituye: si hay algo medido, se sirve lo último bueno
-con SU hora, y la pantalla ya se encarga de marcarlo como viejo (`estaRancio`, 300 s).
+The only protection was two sixty-second caches, so one minute of CC being down was enough to
+leave us without a tracker. This is what replaces that: if something has been measured, the last
+good one is served with ITS OWN timestamp, and the screen already takes care of marking it as
+stale (`estaRancio`, 300 s).
 """
 from datetime import datetime, timedelta, timezone
 
@@ -30,10 +31,10 @@ AHORA = datetime.now(timezone.utc)
 MAQUINAS = [{"code": "pokemon_50", "name": "Elite Pokémon", "price": 50, "buyback": 0.85,
              "available": True}]
 
-# `/gacha/ev` cerró sus puertas en cuanto el tracker pasó a cobrarse (tarea 7): este fichero
-# prueba el respaldo, no el acceso, así que la wallet de prueba se mete de oficio en la lista
-# blanca — la vía de la casa, no la del wager ni la del pase — para no ensuciar cada test con el
-# sembrado de una batalla o un `TrackerPass` que no viene a cuento aquí.
+# `/gacha/ev` closed its doors as soon as the tracker started being charged for (task 7): this
+# file tests the backup, not access, so the test wallet gets put on the allowlist by default
+# (the house's own path, not the wager's or the pass's), so as not to clutter every test with
+# seeding a battle or a `TrackerPass` that's beside the point here.
 WALLET = "8QDBKx8P3pxkRhiqyXFtYcPPf2CM1F5NiE5A8yjkgtm6"
 
 
@@ -52,8 +53,8 @@ def client():
                      tracker_access_allowlist={WALLET})
     c = TestClient(app, raise_server_exceptions=True)
     c.session_factory = sf
-    # Headers por defecto y no por llamada: así ningún `client.get(...)` de este fichero tiene que
-    # tocarse para llevar el token, y la wallet autenticada coincide con la de la lista blanca.
+    # Default headers instead of per-call: this way no `client.get(...)` in this file has to be
+    # touched to carry the token, and the authenticated wallet matches the one on the allowlist.
     c.headers.update(privy_auth_headers(priv, app_id, WALLET))
     return c
 
@@ -78,34 +79,35 @@ def _cc_caido(monkeypatch, error=None):
     monkeypatch.setattr(GachaService, "machines", _explota)
 
 
-def test_con_CC_caido_sirve_lo_ULTIMO_BUENO_en_vez_de_un_502(client, monkeypatch):
-    """El caso que rompía la pantalla entera."""
+def test_with_CC_down_it_serves_the_LAST_GOOD_one_instead_of_a_502(client, monkeypatch):
+    """The case that used to break the whole screen."""
     _sembrar(client)
     _cc_responde(monkeypatch)
     primera = client.get("/gacha/ev")
     assert primera.status_code == 200, primera.text
-    assert primera.json()["rows"], "hace falta algo medido para que haya respaldo"
+    assert primera.json()["rows"], "something measured is needed for there to be a backup"
 
     _cc_caido(monkeypatch)
-    # `hours` distinto salta la caché de 60 s, que es lo que enmascaraba el problema.
+    # A different `hours` skips the 60 s cache, which is what was masking the problem.
     r = client.get("/gacha/ev?hours=47")
     assert r.status_code == 200, r.text
     assert r.json()["rows"] == primera.json()["rows"]
 
 
-def test_el_respaldo_conserva_SU_hora_y_no_finge_estar_recien_medido(client, monkeypatch):
-    """Es lo que hace honesto al respaldo.
+def test_the_backup_keeps_ITS_OWN_time_and_does_not_pretend_to_be_freshly_measured(client, monkeypatch):
+    """It's what keeps the backup honest.
 
-    La pantalla decide que algo está rancio comparando `updated_at` con el reloj (`estaRancio`,
-    300 s). Si al servir lo viejo le pusiéramos la hora actual, el aviso STALE no saltaría NUNCA y
-    estaríamos enseñando mediciones de hace horas como si fueran de ahora mismo.
+    The screen decides something is stale by comparing `updated_at` against the clock
+    (`estaRancio`, 300 s). If we set the current time on the old data being served, the STALE
+    warning would NEVER trigger and we'd be showing measurements from hours ago as if they were
+    from right now.
 
-    HACE FALTA ADELANTAR EL RELOJ. Sin esto el test pasa igual aunque el endpoint ponga la hora
-    actual, porque las dos lecturas caen en el mismo segundo: comprobado mutando el código, la
-    primera versión de este test no sujetaba nada.
+    THE CLOCK NEEDS TO BE MOVED FORWARD. Without this the test passes just the same even if the
+    endpoint sets the current time, because both readings land in the same second: verified by
+    mutating the code, the first version of this test wasn't holding anything down.
 
-    Se sustituye el `_time` que ve `main`, no `time.time` global, para no tocarle el reloj a
-    httpx ni a nadie más durante la petición.
+    The `_time` that `main` sees gets substituted, not the global `time.time`, so as not to mess
+    with httpx's clock or anyone else's during the request.
     """
     _sembrar(client)
     _cc_responde(monkeypatch)
@@ -114,17 +116,17 @@ def test_el_respaldo_conserva_SU_hora_y_no_finge_estar_recien_medido(client, mon
     class RelojAdelantado:
         @staticmethod
         def time():
-            return sello + 3600          # una hora después de la última medición buena
+            return sello + 3600          # one hour after the last good measurement
     monkeypatch.setattr(main_mod, "_time", RelojAdelantado)
 
     _cc_caido(monkeypatch)
     cuerpo = client.get("/gacha/ev?hours=47").json()
-    assert cuerpo["updated_at"] == sello, "el respaldo tiene que llevar la hora en que se midió"
-    assert cuerpo["updated_at"] < sello + 300, "y por tanto la pantalla lo marcará STALE"
+    assert cuerpo["updated_at"] == sello, "the backup must carry the time it was measured"
+    assert cuerpo["updated_at"] < sello + 300, "and therefore the screen will mark it STALE"
 
 
-def test_el_respaldo_se_marca_como_tal(client, monkeypatch):
-    """Para poder distinguir en el log y en pruebas una medición fresca de una servida de reserva."""
+def test_the_backup_is_marked_as_such(client, monkeypatch):
+    """So as to be able to tell apart, in the log and in tests, a fresh measurement from one served as backup."""
     _sembrar(client)
     _cc_responde(monkeypatch)
     assert client.get("/gacha/ev").json().get("stale") is not True
@@ -133,19 +135,19 @@ def test_el_respaldo_se_marca_como_tal(client, monkeypatch):
     assert client.get("/gacha/ev?hours=47").json()["stale"] is True
 
 
-def test_sin_NADA_medido_todavia_sigue_siendo_un_502(client, monkeypatch):
-    """No hay respaldo que servir, así que mentir con una lista vacía sería peor: la pantalla diría
-    "no machines measured yet" y parecería un problema de datos en vez de uno de red."""
+def test_with_NOTHING_measured_yet_it_is_still_a_502(client, monkeypatch):
+    """There's no backup to serve, so lying with an empty list would be worse: the screen would say
+    "no machines measured yet" and it would look like a data problem instead of a network one."""
     _cc_caido(monkeypatch)
     r = client.get("/gacha/ev")
     assert r.status_code == 502
 
 
-def test_el_gacha_APAGADO_a_proposito_no_se_disfraza_de_respaldo(client, monkeypatch):
-    """`gacha_base_url` vacío es el kill-switch, una decisión nuestra y no una caída de CC.
+def test_the_gacha_turned_OFF_on_purpose_does_not_disguise_itself_as_a_backup(client, monkeypatch):
+    """An empty `gacha_base_url` is the kill switch, a decision of ours and not a CC outage.
 
-    Seguir sirviendo el tracker con datos guardados después de apagar el gacha a mano haría que el
-    interruptor no apagara del todo.
+    Continuing to serve the tracker with stored data after turning off the gacha by hand would
+    make the switch not really turn it off.
     """
     _sembrar(client)
     _cc_responde(monkeypatch)
@@ -155,8 +157,8 @@ def test_el_gacha_APAGADO_a_proposito_no_se_disfraza_de_respaldo(client, monkeyp
     assert client.get("/gacha/ev?hours=47").status_code == 503
 
 
-def test_cuando_CC_vuelve_se_deja_de_servir_el_respaldo(client, monkeypatch):
-    """El respaldo es un puente, no un destino."""
+def test_when_CC_comes_back_the_backup_stops_being_served(client, monkeypatch):
+    """The backup is a bridge, not a destination."""
     _sembrar(client)
     _cc_responde(monkeypatch)
     client.get("/gacha/ev")

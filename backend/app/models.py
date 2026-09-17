@@ -15,8 +15,8 @@ class User(Base):
     alias: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     elo: Mapped[int] = mapped_column(Integer, default=1200)
     games_played: Mapped[int] = mapped_column(Integer, default=0)
-    #: Decimal a propósito: el gacha paga 0.01 por dólar, así que los premios son fracciones de punto
-    #: y un contador entero los redondearía a cero. Ver `award_gimmighouls`.
+    #: Decimal on purpose: the gacha pays 0.01 per dollar, so awards are fractions of a point and
+    #: an integer counter would round them down to zero. See `award_gimmighouls`.
     gimmighouls: Mapped[float] = mapped_column(Float, default=0.0)
     referred_by: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # ReferralCode.code
     withdraw_address: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # USDC payout destination
@@ -413,32 +413,34 @@ class GachaCoverage(Base):
 
 
 class TrackerPass(Base):
-    """Un pase de pago del Machine Tracker.
+    """A paid Machine Tracker pass.
 
-    La ÚNICA parte con estado del acceso al tracker. La ventana del wager se recalcula en cada
-    consulta y no guarda nada; ver `tracker_access`. Esa frontera importa: si un día el pase se
-    complica, el wager no se entera.
+    The ONLY stateful part of tracker access. The wager window is recomputed on every query and
+    stores nothing; see `tracker_access`. That boundary matters: if the pass ever gets
+    complicated, the wager never finds out.
 
-    `status` va de `pending` a `active` o a `failed`, y SOLO `active` da acceso. Se inserta como
-    `pending` ANTES de enviar el cobro a la cadena, y YA CON su firma (ver `tx_signature`), así
-    que un fallo del envío no regala acceso y además deja algo concreto que reconciliar.
+    `status` goes from `pending` to `active` or to `failed`, and ONLY `active` grants access. It
+    is inserted as `pending` BEFORE the charge is sent to the chain, and ALREADY carrying its
+    signature (see `tx_signature`), so a failed send gives away no access and still leaves
+    something concrete to reconcile.
     """
     __tablename__ = "tracker_passes"
     id: Mapped[str] = mapped_column(String, primary_key=True)
     wallet: Mapped[str] = mapped_column(String, index=True)
     days: Mapped[int] = mapped_column(Integer)
-    #: Lo cobrado, congelado. Si el precio cambia mañana, lo que se pagó no se reescribe.
+    #: What was charged, frozen. If the price changes tomorrow, what was paid is not rewritten.
     price_base_units: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String, default="pending")
     starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    #: La fila NACE con esta columna ya rellena, no al revés. La firma de una transacción de
-    #: Solana viaja DENTRO de la propia transacción ya firmada (no la inventa el RPC), así que se
-    #: lee en local y se inserta la fila `pending` con ella ANTES de enviar nada: nunca existe un
-    #: `pending` sin firma. Un `pending` con firma significa "se cobró y no se sabe si se activó"
-    #: —no "no se activó" a secas: `confirmar_firma` puede devolver `None` en vez de un
-    #: veredicto— y es lo que hace ese hueco reconciliable: la siguiente compra de la misma
-    #: wallet vuelve a preguntar sola antes de rendirse (ver `gacha_tracker_pass` en app/main.py).
+    #: The row is BORN with this column already filled in, not the other way around. The
+    #: signature of a Solana transaction travels INSIDE the signed transaction itself (the RPC
+    #: does not invent it), so it is read locally and the `pending` row is inserted with it
+    #: BEFORE anything is sent: a `pending` without a signature never exists. A `pending` with a
+    #: signature means "it was charged and we do not know whether it activated", not plainly "it
+    #: did not activate": `confirmar_firma` can return `None` instead of a verdict. That is what
+    #: makes the gap reconcilable: the same wallet's next purchase asks again on its own before
+    #: giving up (see `gacha_tracker_pass` in app/main.py).
     tx_signature: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 

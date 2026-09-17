@@ -8,33 +8,33 @@ import { PassOffer } from './PassOffer'
 
 beforeEach(() => mocks.comprar.mockReset())
 
-describe('la compra del pase, dentro de la puerta', () => {
-  it('sin precios configurados NO se ofrece nada', () => {
-    // Cero significa apagado. Un botón deshabilitado prometería algo que no existe.
+describe('buying the pass, inside the gate', () => {
+  it('with no prices configured, NOTHING is offered', () => {
+    // Zero means disabled. A disabled button would promise something that does not exist.
     const { container } = render(<PassOffer prices={{}} token="t" onComprado={() => {}} />)
     expect(container.textContent).toBe('')
   })
 
-  it('enseña las dos duraciones con su precio', () => {
+  it('shows both durations with their price', () => {
     render(<PassOffer prices={{ '7': 10, '30': 30 }} token="t" onComprado={() => {}} />)
     expect(screen.getByText(/7 days/i)).toBeTruthy()
     expect(screen.getByText(/30 days/i)).toBeTruthy()
   })
 
-  it('dice el precio POR DÍA, que es lo que deja comparar', () => {
-    // 30 a 30 son 1.00/día; 7 a 10 son 1.43/día. Sin esta cifra nadie ve cuál sale mejor.
+  it('states the price PER DAY, which is what lets you compare', () => {
+    // 30 for 30 is 1.00/day; 7 for 10 is 1.43/day. Without this figure nobody can see which is the better deal.
     render(<PassOffer prices={{ '7': 10, '30': 30 }} token="t" onComprado={() => {}} />)
     expect(screen.getByText(/1\.43/)).toBeTruthy()
     expect(screen.getByText(/1\.00/)).toBeTruthy()
   })
 
-  it('avisa de que no hay devoluciones ANTES de pagar', () => {
-    // Si compras 30 días y mañana apuestas 100, has pagado por algo que ya tenías.
+  it('warns that there are no refunds BEFORE paying', () => {
+    // If you buy 30 days and tomorrow wager 100, you paid for something you already had.
     render(<PassOffer prices={{ '7': 10, '30': 30 }} token="t" onComprado={() => {}} />)
     expect(screen.getByText(/no refunds/i)).toBeTruthy()
   })
 
-  it('comprar avisa a quien lo montó, para que refresque el acceso', async () => {
+  it('buying notifies whoever mounted it, so it refreshes access', async () => {
     mocks.comprar.mockResolvedValue({ pass_until: 1, days: 7, price_usdc: 10 })
     const onComprado = vi.fn()
     render(<PassOffer prices={{ '7': 10, '30': 30 }} token="t" onComprado={onComprado} />)
@@ -43,13 +43,13 @@ describe('la compra del pase, dentro de la puerta', () => {
     expect(mocks.comprar).toHaveBeenCalledWith(7, 't')
   })
 
-  it('mientras se cobra no se puede pulsar dos veces', async () => {
-    // Un doble clic sobre un cobro son dos cobros.
+  it('while charging, it cannot be clicked twice', async () => {
+    // A double click on a charge is two charges.
     //
-    // La promesa se deja RESOLVIBLE (con su propio resolver) y se resuelve al final del test, en
-    // vez de una que no se resuelve nunca. Dejar una petición de verdad colgada para siempre hace
-    // que el siguiente `beforeEach` de este archivo, que toca este mismo mock, se quede esperando
-    // para siempre con ella: no es el componente, es cómo interactúan aquí el mock y el hook.
+    // The promise is left RESOLVABLE (with its own resolver) and resolved at the end of the
+    // test, instead of one that never resolves. Leaving a real request hanging forever makes the
+    // next `beforeEach` in this file, which touches this same mock, wait forever along with it:
+    // it is not the component, it is how the mock and the hook interact here.
     let resolver!: (v: unknown) => void
     mocks.comprar.mockReturnValue(new Promise((r) => { resolver = r }))
     render(<PassOffer prices={{ '7': 10, '30': 30 }} token="t" onComprado={() => {}} />)
@@ -60,33 +60,33 @@ describe('la compra del pase, dentro de la puerta', () => {
     await act(async () => { resolver({ pass_until: 1, days: 7, price_usdc: 10 }) })
   })
 
-  it('tras cobrar con éxito, pulsar otra vez mientras la puerta sigue montada NO cobra dos veces', async () => {
-    // El caso real: `onComprado()` (asíncrono, sin esperar aquí) sigue viajando hacia el padre,
-    // que es quien de verdad desmonta la puerta. Este test deja la puerta montada A PROPÓSITO
-    // tras el éxito, que es justo el hueco que antes dejaba pulsar dos veces y pagar dos pases:
-    // el `finally` reactivaba los botones en cuanto `buyTrackerPass` resolvía, sin esperar a que
-    // `onComprado()` terminase.
+  it('after a successful charge, clicking again while the gate is still mounted does NOT charge twice', async () => {
+    // The real case: `onComprado()` (async, not awaited here) keeps traveling toward the
+    // parent, which is the one that really unmounts the gate. This test leaves the gate mounted
+    // ON PURPOSE after success, which is exactly the gap that used to let you click twice and
+    // pay for two passes: the `finally` re-enabled the buttons as soon as `buyTrackerPass`
+    // resolved, without waiting for `onComprado()` to finish.
     mocks.comprar.mockResolvedValueOnce({ pass_until: 1, days: 7, price_usdc: 10 })
     const onComprado = vi.fn()
     render(<PassOffer prices={{ '7': 10, '30': 30 }} token="t" onComprado={onComprado} />)
     const boton = screen.getByRole('button', { name: /7 days/i })
     fireEvent.click(boton)
     await waitFor(() => expect(onComprado).toHaveBeenCalledTimes(1))
-    // La puerta sigue montada (nadie la desmontó): un segundo y tercer clic no deben cobrar más.
+    // The gate stays mounted (nobody unmounted it): a second and third click must not charge again.
     fireEvent.click(boton)
     fireEvent.click(boton)
     expect(mocks.comprar).toHaveBeenCalledTimes(1)
   })
 
-  it('sin saldo lo dice con lo que hay que hacer, no con un error genérico', async () => {
+  it('with no balance, it says what needs to be done, not a generic error', async () => {
     mocks.comprar.mockRejectedValueOnce({ status: 402 })
     render(<PassOffer prices={{ '7': 10, '30': 30 }} token="t" onComprado={() => {}} />)
     fireEvent.click(screen.getByRole('button', { name: /7 days/i }))
     expect(await screen.findByText(/not enough usdc/i)).toBeTruthy()
   })
 
-  it('un fallo de cobro dice que se reintente, y NO que deposite', async () => {
-    // Tiene el dinero: pedirle depositar sería insultante y no arreglaría nada.
+  it('a charge failure says to retry, and NOT to deposit', async () => {
+    // They have the money: asking them to deposit would be insulting and would fix nothing.
     mocks.comprar.mockRejectedValueOnce({ status: 502 })
     render(<PassOffer prices={{ '7': 10, '30': 30 }} token="t" onComprado={() => {}} />)
     fireEvent.click(screen.getByRole('button', { name: /7 days/i }))
@@ -94,11 +94,11 @@ describe('la compra del pase, dentro de la puerta', () => {
     expect(screen.queryByText(/deposit/i)).toBeNull()
   })
 
-  // Los siguientes cuatro no vienen en la especificación original: los añade esta tarea porque
-  // el backend puede devolver 409 (con dos motivos DISTINTOS), 429 y 503, y cada uno pide una
-  // reacción distinta del jugador.
+  // The following four are not in the original spec: this task adds them because the backend
+  // can return 409 (with two DIFFERENT reasons), 429 and 503, and each one calls for a different
+  // reaction from the player.
 
-  it('una compra recién empezada pide esperar unos segundos, no escribir a soporte', async () => {
+  it('a purchase just started asks to wait a few seconds, not to write to support', async () => {
     mocks.comprar.mockRejectedValueOnce({ status: 409, message: 'tracker_pass_pending' })
     render(<PassOffer prices={{ '7': 10, '30': 30 }} token="t" onComprado={() => {}} />)
     fireEvent.click(screen.getByRole('button', { name: /7 days/i }))
@@ -106,7 +106,7 @@ describe('la compra del pase, dentro de la puerta', () => {
     expect(screen.queryByText(/contact support/i)).toBeNull()
   })
 
-  it('una compra encallada pide escribir a soporte, no esperar unos segundos', async () => {
+  it('a stuck purchase asks to write to support, not to wait a few seconds', async () => {
     mocks.comprar.mockRejectedValueOnce({ status: 409, message: 'tracker_pass_pending_stuck' })
     render(<PassOffer prices={{ '7': 10, '30': 30 }} token="t" onComprado={() => {}} />)
     fireEvent.click(screen.getByRole('button', { name: /7 days/i }))
@@ -114,16 +114,16 @@ describe('la compra del pase, dentro de la puerta', () => {
     expect(screen.queryByText(/wait a few seconds/i)).toBeNull()
   })
 
-  it('demasiados intentos pide esperar', async () => {
+  it('too many attempts asks to wait', async () => {
     mocks.comprar.mockRejectedValueOnce({ status: 429 })
     render(<PassOffer prices={{ '7': 10, '30': 30 }} token="t" onComprado={() => {}} />)
     fireEvent.click(screen.getByRole('button', { name: /7 days/i }))
     expect(await screen.findByText(/too many attempts/i)).toBeTruthy()
   })
 
-  it('con la compra apagada o mal configurada da un mensaje genérico', async () => {
-    // Con `pass_prices` vacío este bloque ni se renderiza, así que esto solo puede pasar en una
-    // carrera justo cuando se apaga; basta con un mensaje genérico, no uno por caso.
+  it('with buying turned off or misconfigured, it gives a generic message', async () => {
+    // With `pass_prices` empty this block does not even render, so this can only happen in a
+    // race right when it gets disabled; a generic message is enough, not one per case.
     mocks.comprar.mockRejectedValueOnce({ status: 503 })
     render(<PassOffer prices={{ '7': 10, '30': 30 }} token="t" onComprado={() => {}} />)
     fireEvent.click(screen.getByRole('button', { name: /7 days/i }))

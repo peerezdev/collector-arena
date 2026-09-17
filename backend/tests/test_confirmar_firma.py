@@ -1,7 +1,8 @@
-"""Que un cobro se haya ENVIADO no es que haya llegado.
+"""A charge having been SENT doesn't mean it arrived.
 
-`submit_signed_tx` hace `sendTransaction` y devuelve la firma sin esperar nada. Activar un pase
-sobre eso regalaría el acceso cada vez que una transacción se cae después de enviarse.
+`submit_signed_tx` does `sendTransaction` and returns the signature without waiting for anything.
+Activating a pass on top of that would give away access every time a transaction drops after
+being sent.
 """
 import json
 
@@ -12,7 +13,7 @@ from app.services.solana_tx import confirmar_firma
 
 
 class _Resp:
-    """Respuesta falsa de `getSignatureStatuses`: solo necesita `raise_for_status` y `json`."""
+    """Fake response from `getSignatureStatuses`: it only needs `raise_for_status` and `json`."""
 
     def __init__(self, cuerpo):
         self._cuerpo = cuerpo
@@ -25,9 +26,9 @@ class _Resp:
 
 
 class _RompeJSON(_Resp):
-    """200 con un cuerpo que NO es JSON: una pasarela degradada, un proxy que devuelve HTML o una
-    respuesta vacía bajo carga. `.json()` revienta con `json.JSONDecodeError`, que NO es subclase
-    de `httpx.HTTPError` — es justo el hueco que este test existe para cazar."""
+    """200 with a body that is NOT JSON: a degraded gateway, a proxy that returns HTML, or an
+    empty response under load. `.json()` blows up with `json.JSONDecodeError`, which is NOT a
+    subclass of `httpx.HTTPError`: that's exactly the gap this test exists to catch."""
 
     def __init__(self):
         super().__init__(None)
@@ -37,11 +38,11 @@ class _RompeJSON(_Resp):
 
 
 def _cliente(monkeypatch, eventos):
-    """Sustituye `httpx.AsyncClient` por uno que, en cada `post`, consume el siguiente elemento de
-    `eventos`: si es una excepción la lanza (fallo de red antes de recibir nada); si ya es una
-    `_Resp` la devuelve tal cual (para forzar cuerpos raros como `_RompeJSON`); si es cualquier
-    otra cosa (un dict o `None`) la envuelve como el `value` de `getSignatureStatuses`. Agotada la
-    lista, sigue devolviendo `None`: "todavía no lo sé". Cuenta las llamadas."""
+    """Replaces `httpx.AsyncClient` with one that, on every `post`, consumes the next item from
+    `eventos`: if it's an exception it raises it (network failure before receiving anything); if
+    it's already a `_Resp` it returns it as-is (to force odd bodies like `_RompeJSON`); if it's
+    anything else (a dict or `None`) it wraps it as the `value` of `getSignatureStatuses`. Once
+    the list is exhausted, it keeps returning `None`: "still don't know". Counts the calls."""
     llamadas = {"n": 0}
 
     class _Cli:
@@ -65,73 +66,73 @@ def _cliente(monkeypatch, eventos):
 
 
 @pytest.mark.asyncio
-async def test_confirmada_a_la_primera(monkeypatch):
+async def test_confirmed_on_the_first_try(monkeypatch):
     llamadas = _cliente(monkeypatch, [{"confirmationStatus": "confirmed", "err": None}])
     assert await confirmar_firma("http://rpc", "5xFirma") is True
     assert llamadas["n"] == 1
 
 
 @pytest.mark.asyncio
-async def test_una_transaccion_con_error_no_esta_confirmada(monkeypatch):
-    # El caso que más importa: la cadena la aceptó y la ejecutó MAL. Si esto devolviera True,
-    # activaríamos un pase que nadie pagó.
+async def test_a_transaction_with_an_error_is_not_confirmed(monkeypatch):
+    # The case that matters most: the chain accepted it and executed it WRONG. If this returned
+    # True, we'd be activating a pass nobody paid for.
     _cliente(monkeypatch, [{"confirmationStatus": "confirmed", "err": {"InstructionError": 1}}])
     assert await confirmar_firma("http://rpc", "5xFirma") is False
 
 
 @pytest.mark.asyncio
-async def test_espera_mientras_el_rpc_todavia_no_sabe(monkeypatch):
-    # `null` es "no la conozco todavía", que es lo normal en los primeros instantes.
+async def test_waits_while_the_rpc_still_does_not_know(monkeypatch):
+    # `null` means "I don't know it yet", which is normal in the first instants.
     llamadas = _cliente(monkeypatch, [None, None, {"confirmationStatus": "finalized", "err": None}])
     assert await confirmar_firma("http://rpc", "5xFirma", intentos=5, espera_s=0) is True
     assert llamadas["n"] == 3
 
 
 @pytest.mark.asyncio
-async def test_si_nunca_se_confirma_devuelve_indeterminado_y_no_revienta(monkeypatch):
-    # `None`, no `False`: nunca vimos ni un `err` ni una confirmación, así que no sabemos si el
-    # dinero se movió. Devolver `False` aquí sería afirmar "seguro que no" sobre algo que no se
-    # sabe.
+async def test_if_it_never_confirms_it_returns_indeterminate_and_does_not_blow_up(monkeypatch):
+    # `None`, not `False`: we never saw an `err` or a confirmation, so we don't know whether the
+    # money moved. Returning `False` here would be asserting "definitely not" about something
+    # that isn't known.
     llamadas = _cliente(monkeypatch, [None] * 10)
     assert await confirmar_firma("http://rpc", "5xFirma", intentos=3, espera_s=0) is None
-    assert llamadas["n"] == 3  # no sondea más de lo que se le pidió
+    assert llamadas["n"] == 3  # doesn't poll more than what it was asked to
 
 
 @pytest.mark.asyncio
-async def test_processed_no_basta(monkeypatch):
-    # `processed` puede revertirse. Solo valen `confirmed` y `finalized`; agotar los intentos
-    # atascado en `processed` es indeterminado, no un rechazo.
+async def test_processed_is_not_enough(monkeypatch):
+    # `processed` can be reverted. Only `confirmed` and `finalized` count; running out of
+    # attempts stuck on `processed` is indeterminate, not a rejection.
     _cliente(monkeypatch, [{"confirmationStatus": "processed", "err": None}] * 3)
     assert await confirmar_firma("http://rpc", "5xFirma", intentos=3, espera_s=0) is None
 
 
-# ── un fallo de red o un cuerpo raro no deben tumbar la petición del usuario ─────────────────
+# ── a network failure or a weird body must not take down the user's request ─────────────────
 #
-# Si `except httpx.HTTPError: continue` se cambiara por `except httpx.HTTPError: return True`,
-# ningún test de arriba lo notaría: ninguno hace que `post` falle. Son justo estos tres los que
-# demuestran que ese hueco es real y lo cierran.
+# If `except httpx.HTTPError: continue` were changed to `except httpx.HTTPError: return True`,
+# none of the tests above would notice: none of them make `post` fail. These three right here are
+# exactly the ones that prove that gap is real, and close it.
 
 @pytest.mark.asyncio
-async def test_un_fallo_de_red_no_impide_confirmar_despues(monkeypatch):
-    # El primer intento no llega ni a tener respuesta; eso no debe impedir seguir probando.
-    llamadas = _cliente(monkeypatch, [httpx.ConnectError("caída"),
+async def test_a_network_failure_does_not_prevent_confirming_later(monkeypatch):
+    # The first attempt doesn't even get a response; that shouldn't stop it from trying again.
+    llamadas = _cliente(monkeypatch, [httpx.ConnectError("down"),
                                       {"confirmationStatus": "confirmed", "err": None}])
     assert await confirmar_firma("http://rpc", "5xFirma", intentos=5, espera_s=0) is True
     assert llamadas["n"] == 2
 
 
 @pytest.mark.asyncio
-async def test_si_la_red_falla_siempre_devuelve_indeterminado_y_no_revienta(monkeypatch):
-    # La red nunca respondió: no es un rechazo, es no saber. `None`, no `False`.
-    llamadas = _cliente(monkeypatch, [httpx.ConnectError("caída")] * 10)
+async def test_if_the_network_always_fails_it_returns_indeterminate_and_does_not_blow_up(monkeypatch):
+    # The network never responded: it's not a rejection, it's not knowing. `None`, not `False`.
+    llamadas = _cliente(monkeypatch, [httpx.ConnectError("down")] * 10)
     assert await confirmar_firma("http://rpc", "5xFirma", intentos=3, espera_s=0) is None
     assert llamadas["n"] == 3
 
 
 @pytest.mark.asyncio
-async def test_un_cuerpo_que_no_es_json_no_revienta(monkeypatch):
-    # Antes esto dejaba escapar `json.JSONDecodeError`, que no es `httpx.HTTPError`: la petición
-    # del usuario reventaba en vez de simplemente reintentar.
+async def test_a_body_that_is_not_json_does_not_blow_up(monkeypatch):
+    # Before, this let `json.JSONDecodeError` escape, which is not `httpx.HTTPError`: the user's
+    # request blew up instead of simply retrying.
     llamadas = _cliente(monkeypatch, [_RompeJSON(),
                                       {"confirmationStatus": "confirmed", "err": None}])
     assert await confirmar_firma("http://rpc", "5xFirma", intentos=5, espera_s=0) is True

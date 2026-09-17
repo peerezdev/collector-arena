@@ -98,12 +98,12 @@ def escrow_que_entrega():
     return confirmar
 
 
-# ── La compra del pase del Machine Tracker ────────────────────────────────────
+# ── The Machine Tracker pass purchase ────────────────────────────────────────
 #
-# Estas fixtures las usa `test_tracker_pass_api.py` (tarea 6) y las reutilizará la tarea 7, así
-# que viven aquí y no dentro de un fichero de test concreto. Prefijo `pase_` en TODAS: este
-# conftest es global, y sin prefijo un fichero futuro que pida `client` recibiría en silencio
-# esta app con el dinero intervenido en vez de la suya.
+# These fixtures are used by `test_tracker_pass_api.py` (task 6) and task 7 will reuse them, so
+# they live here and not inside one specific test file. Prefix `pase_` on ALL of them: this
+# conftest is global, and without the prefix a future file that asks for `client` would silently
+# receive this app with the money intercepted instead of its own.
 
 TRACKER_PASS_APP_ID = "app-test"
 TRACKER_PASS_WALLET_ID = "wid-1"
@@ -111,23 +111,25 @@ TRACKER_PASS_WALLET = "8QDBKx8P3pxkRhiqyXFtYcPPf2CM1F5NiE5A8yjkgtm6"
 
 
 class _FirmanteFalso:
-    """No firma nada: en el camino mockeado, `construir_y_firmar_cobro` está interceptado y nunca
-    llega aquí."""
+    """Signs nothing: on the mocked path, `construir_y_firmar_cobro` is intercepted and never
+    reaches here."""
     enabled = True
 
 
 class _FirmanteDeVerdad:
-    """Firma DE VERDAD, en local y con una clave de usar y tirar, la ranura del OPERADOR.
+    """Signs the OPERATOR's slot FOR REAL, locally and with a throwaway key.
 
-    POR QUÉ EXISTE. Con `construir_y_firmar_cobro` mockeado —como estaba TODA la suite— ningún
-    test puede ver un `ValueError` real de construcción, y esa es exactamente la familia de fallos
-    que se ha colado tres rondas seguidas (el blockhash, la wallet de destino, la dirección del
-    operador, el mint). Con este doble, el tramo construir → firmar → leer la firma corre entero
-    y sin mocks; lo único intervenido es el envío, que es lo que no se puede hacer en un test.
+    WHY IT EXISTS. With `construir_y_firmar_cobro` mocked (as the WHOLE suite used to be), no
+    test could see a real construction `ValueError`, and that is exactly the family of failures
+    that has slipped through three rounds in a row (the blockhash, the destination wallet, the
+    operator address, the mint). With this double, the build, sign, read the signature leg runs
+    end to end and without mocks; the only thing intercepted is the send, which is what cannot be
+    done in a test.
 
-    Del jugador no tenemos la clave privada (la guarda Privy), así que su ranura de firma se queda
-    a ceros. Da igual: la firma que IDENTIFICA una transacción de Solana es la del fee payer, y el
-    fee payer aquí es el operador — que sí es nuestro. Y nada de esto se envía a ninguna red.
+    We do not have the player's private key (Privy holds it), so their signature slot stays at
+    zeros. It does not matter: the signature that IDENTIFIES a Solana transaction is the fee
+    payer's, and the fee payer here is the operator (which is indeed ours). And none of this gets
+    sent to any network.
     """
     enabled = True
 
@@ -143,12 +145,13 @@ class _FirmanteDeVerdad:
 
 
 def _tx_firmada_de_verdad() -> str:
-    """Una transacción de verdad, firmada de verdad, en base64.
+    """A real transaction, really signed, in base64.
 
-    Es lo que devuelve el doble de `construir_y_firmar_cobro` en el camino mockeado. Devolver una
-    cadena cualquiera ("FirmaFalsa") NO valdría: el endpoint le pasa esto a `leer_firma`, que solo
-    acepta bytes que sean una transacción con la ranura del fee payer rellena. Así el `tx_signature`
-    que acaba en la base es una firma base58 real, como en producción.
+    It is what the `construir_y_firmar_cobro` double returns on the mocked path. Returning any
+    old string ("FirmaFalsa") would NOT work: the endpoint passes this to `leer_firma`, which only
+    accepts bytes that are a transaction with the fee payer's slot filled in. That way the
+    `tx_signature` that ends up in the database is a real base58 signature, just like in
+    production.
     """
     kp = Keypair()
     tx = Transaction.from_bytes(base64.b64decode(
@@ -160,17 +163,17 @@ def _tx_firmada_de_verdad() -> str:
 def _crear_pase_entorno(monkeypatch, *, s7=10.0, s30=30.0, operator_address=None,
                         cc_usdc_mint="Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG9Vp2KGtKJr",
                         fee_wallet_address="", construccion_real=False):
-    """Construye la app de la compra del pase y le interviene el dinero.
+    """Builds the pass purchase app and intercepts its money.
 
-    `s7`/`s30` son los precios de 7 y 30 días en USDC; a 0.0 el pase queda APAGADO (ver
-    `pase_precio_apagado`). `operator_address` deja simular la wallet del operador sin configurar
-    o mal escrita. `cc_usdc_mint` deja simular un mint mal escrito. `fee_wallet_address` deja
-    separar la wallet de destino (que el endpoint valida por su cuenta) de la del operador (que
-    no valida, y que por tanto solo revienta al CONSTRUIR).
+    `s7`/`s30` are the 7 and 30 day prices in USDC; at 0.0 the pass stays OFF (see
+    `pase_precio_apagado`). `operator_address` lets us simulate the operator wallet unconfigured
+    or misspelled. `cc_usdc_mint` lets us simulate a misspelled mint. `fee_wallet_address` lets us
+    separate the destination wallet (which the endpoint validates on its own) from the operator's
+    (which it does not validate, and which therefore only blows up at BUILD time).
 
-    `construccion_real=True` NO mockea `construir_y_firmar_cobro`: se construye y se firma de
-    verdad, y solo el envío queda intervenido. Es la única forma de que un test vea los
-    `ValueError`/`ParseHashError` que lanza solders con la configuración mal puesta.
+    `construccion_real=True` does NOT mock `construir_y_firmar_cobro`: it builds and signs for
+    real, and only the send stays intercepted. It is the only way for a test to see the
+    `ValueError`/`ParseHashError` that solders raises with a bad configuration.
     """
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False},
                            poolclass=StaticPool)
@@ -179,8 +182,8 @@ def _crear_pase_entorno(monkeypatch, *, s7=10.0, s30=30.0, operator_address=None
     priv = make_es256()
     operator_kp = Keypair()
     if operator_address is None:
-        # Con construcción real tiene que ser la clave que este doble sabe firmar; si no, cualquier
-        # dirección base58 válida sirve.
+        # With real construction it has to be the key this double knows how to sign with;
+        # otherwise, any valid base58 address will do.
         operator_address = (str(operator_kp.pubkey()) if construccion_real
                             else "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU")
     firmante = (_FirmanteDeVerdad("op-id", operator_kp) if construccion_real else _FirmanteFalso())
@@ -196,14 +199,14 @@ def _crear_pase_entorno(monkeypatch, *, s7=10.0, s30=30.0, operator_address=None
                      solana_rpc_url="https://rpc.test",
                      tracker_pass_7d_usdc=s7, tracker_pass_30d_usdc=s30)
 
-    # El cobro está partido en dos, y los dobles también, porque la LÍNEA ENTRE LOS DOS ES EL
-    # DISEÑO: antes de `enviar` nada se ha difundido y todo es reintentable sin rastro; a partir
-    # de `enviar`, un error ya no prueba que la transacción no haya salido.
-    #   · `firmar`: la transacción firmada que devolvería `construir_y_firmar_cobro`, o una
-    #     Exception (cualquiera: aquí ya no se clasifica por tipo, nunca deja fila).
-    #   · `enviar`: lo que devolvería el RPC, o una Exception (RuntimeError = rechazo explícito;
-    #     cualquier otra = indeterminado).
-    #   · `confirma`: True/False/None, calcando lo que devuelve `confirmar_firma` de verdad.
+    # The charge is split in two, and so are the doubles, because the LINE BETWEEN THE TWO IS THE
+    # DESIGN: before `enviar` nothing has been broadcast and everything is retryable without a
+    # trace; from `enviar` onward, an error no longer proves the transaction did not go through.
+    #   · `firmar`: the signed transaction that `construir_y_firmar_cobro` would return, or an
+    #     Exception (any kind: it is no longer classified by type here, it never leaves a row).
+    #   · `enviar`: what the RPC would return, or an Exception (RuntimeError = explicit rejection;
+    #     anything else = indeterminate).
+    #   · `confirma`: True/False/None, mirroring what `confirmar_firma` really returns.
     mando = {"saldo": 1_000_000_000, "reservado": 0,
              "firmar": _tx_firmada_de_verdad(), "enviar": "FirmaQueDevuelveElRPC",
              "confirma": True, "blockhash": "11111111111111111111111111111111",
@@ -223,10 +226,10 @@ def _crear_pase_entorno(monkeypatch, *, s7=10.0, s30=30.0, operator_address=None
         return mando["blockhash"]
 
     async def _firmar(*a, **k):
-        # Cuenta las filas de esa wallet EN EL INSTANTE de construir y firmar. Es la invariante
-        # nueva de esta ronda y la que hace imposible por construcción la familia de fallos que
-        # encerraba wallets: si aquí ya hubiera una fila, un `ValueError` de configuración
-        # volvería a dejarla puesta y a bloquear a esa wallet para siempre.
+        # Counts that wallet's rows AT THE MOMENT of building and signing. It is this round's new
+        # invariant, and the one that makes it impossible by construction for the family of
+        # failures that used to lock wallets: if a row already existed here, a configuration
+        # `ValueError` would leave it in place again and lock that wallet out forever.
         mando["wallet_del_cobro"] = a[2]
         with sf() as chk:
             mando["filas_al_firmar"] = len(chk.scalars(
@@ -236,18 +239,19 @@ def _crear_pase_entorno(monkeypatch, *, s7=10.0, s30=30.0, operator_address=None
         return mando["firmar"]
 
     async def _enviar(*a, **k):
-        # Fotografía del ACCESO —no de la columna `status`— en el instante en que el dinero se
-        # mueve de verdad. `pase_vigente` es la misma función que usa `/gacha/tracker-access`, así
-        # que esto sobrevive a un renombrado de `status` y caza cualquier estado nuevo que diera
-        # acceso sin llamarse "active": es lo único que puede cazar "se activó antes de cobrar",
-        # porque las ramas de fallo vuelven a dejar la fila en `failed`/`pending` al terminar y
-        # mirar solo el estado FINAL nunca vería esa ventana.
+        # Snapshot of ACCESS (not of the `status` column) at the moment the money really moves.
+        # `pase_vigente` is the same function `/gacha/tracker-access` uses, so this survives a
+        # rename of `status` and catches any new state that grants access without being called
+        # "active": it is the only thing that can catch "it activated before charging", because
+        # the failure branches leave the row back in `failed`/`pending` when they finish, and
+        # looking only at the FINAL state would never see that window.
         with sf() as chk:
             mando["acceso_al_cobrar"] = (
                 tracker_pass.pase_vigente(chk, mando["wallet_del_cobro"]) is not None)
-            # Y la promesa central de esta ronda: cuando el dinero se mueve, la fila YA existe y
-            # YA tiene su firma. Sin esto no habría forma de probar que no queda ninguna `pending`
-            # sin firma —la única que necesitaba ojos humanos— salvo mirando el estado final.
+            # And this round's central promise: when the money moves, the row ALREADY exists and
+            # ALREADY has its signature. Without this there would be no way to prove that no
+            # `pending` row is left without a signature (the one case that needed human eyes)
+            # other than by looking at the final state.
             en_curso = chk.scalars(select(TrackerPass).where(
                 TrackerPass.wallet == mando["wallet_del_cobro"],
                 TrackerPass.status == "pending")).first()
@@ -258,9 +262,9 @@ def _crear_pase_entorno(monkeypatch, *, s7=10.0, s30=30.0, operator_address=None
         return mando["enviar"]
 
     async def _confirma(*a, **k):
-        # Se registran los kwargs de cada llamada para poder distinguir la reconciliación —que le
-        # pasa un presupuesto corto— de la confirmación del cobro nuevo —que usa los valores por
-        # defecto de verdad, porque a una recién enviada sí hay que darle tiempo de asentarse.
+        # Each call's kwargs are recorded so we can tell apart the reconciliation (which is given
+        # a short budget) from the confirmation of the new charge (which really uses the
+        # defaults, because a freshly sent one does need time to settle).
         mando.setdefault("confirma_llamadas", []).append(dict(k))
         return mando["confirma"]
 
@@ -279,35 +283,36 @@ def _crear_pase_entorno(monkeypatch, *, s7=10.0, s30=30.0, operator_address=None
     c.session_factory = sf
     c.hdrs = {"Authorization": f"Bearer {make_id_token(priv, TRACKER_PASS_APP_ID, [cuenta])}"}
     c.mando = mando
-    c.doble_de_firmar = _firmar          # para reintentar tras un fallo de construcción real
+    c.doble_de_firmar = _firmar          # to retry after a real construction failure
     return c
 
 
 @pytest.fixture()
 def pase_entorno(monkeypatch):
-    """App con la compra del pase ENCENDIDA (7 días = 10 USDC, 30 días = 30 USDC) y el dinero
-    intervenido.
+    """App with the pass purchase ON (7 days = 10 USDC, 30 days = 30 USDC) and the money
+    intercepted.
 
-    `mando` controla los puntos donde esto puede salir mal, y cada fixture de abajo mueve uno
-    solo. Así cada test dice exactamente qué falla.
+    `mando` controls the points where this can go wrong, and each fixture below moves only one
+    of them. That way each test says exactly what fails.
     """
     return _crear_pase_entorno(monkeypatch)
 
 
 @pytest.fixture()
 def pase_precio_apagado(monkeypatch):
-    """Misma app que `pase_entorno`, pero con los dos precios a 0.0: el pase APAGADO.
-    `precio_base_units` trata 0 como interruptor, no como "gratis" (app/services/tracker_pass.py),
-    así que con esto la compra no existe — 503, no 200 a coste cero."""
+    """Same app as `pase_entorno`, but with both prices at 0.0: the pass OFF.
+    `precio_base_units` treats 0 as a switch, not as "free" (app/services/tracker_pass.py), so
+    with this the purchase does not exist: 503, not 200 at zero cost."""
     return _crear_pase_entorno(monkeypatch, s7=0.0, s30=0.0)
 
 
 @pytest.fixture()
 def pase_fee_dest_vacio(monkeypatch):
-    """Misma app que `pase_entorno`, pero sin wallet de destino del cobro configurada: ni
-    `fee_wallet_address` ni `privy_operator_address` tienen valor. Con el orden nuevo esto ya no
-    encerraría a nadie (no habría fila), pero un 503 "misconfigured" sigue diciéndole a quien
-    despliega dónde mirar, en vez de mandarlo a buscar en la cadena un cobro que no se intentó."""
+    """Same app as `pase_entorno`, but with no destination wallet configured for the charge:
+    neither `fee_wallet_address` nor `privy_operator_address` has a value. With the new order
+    this would no longer lock anyone out (there would be no row), but a 503 "misconfigured"
+    still tells whoever deploys it where to look, instead of sending them to search the chain
+    for a charge that was never attempted."""
     return _crear_pase_entorno(monkeypatch, operator_address="")
 
 
@@ -318,18 +323,18 @@ def pase_client(pase_entorno):
 
 @pytest.fixture()
 def pase_cobro_ok(pase_entorno):
-    return pase_entorno            # el estado por defecto ya es el camino bueno
+    return pase_entorno            # the default state is already the happy path
 
 
 @pytest.fixture()
 def pase_sin_saldo(pase_entorno):
-    pase_entorno.mando["saldo"] = 1_000_000          # 1 USDC, y el pase cuesta 10
+    pase_entorno.mando["saldo"] = 1_000_000          # 1 USDC, and the pass costs 10
     return pase_entorno
 
 
 @pytest.fixture()
 def pase_saldo_reservado(pase_entorno):
-    # Tiene 20 USDC pero 15 están comprometidos en una batalla: disponibles quedan 5.
+    # Has 20 USDC but 15 are committed to a battle: 5 remain available.
     pase_entorno.mando["saldo"] = 20_000_000
     pase_entorno.mando["reservado"] = 15_000_000
     return pase_entorno
@@ -337,83 +342,85 @@ def pase_saldo_reservado(pase_entorno):
 
 @pytest.fixture()
 def pase_blockhash_revienta(pase_entorno):
-    # Pedir el blockhash es lo primero que toca la red, y pasa ANTES de que exista fila: no hay
-    # nada que desbloquear y el jugador puede reintentar al momento.
-    pase_entorno.mando["blockhash"] = httpx.ConnectError("el RPC no respondió")
+    # Requesting the blockhash is the first thing that touches the network, and it happens
+    # BEFORE any row exists: there is nothing to unlock and the player can retry right away.
+    pase_entorno.mando["blockhash"] = httpx.ConnectError("the RPC did not answer")
     return pase_entorno
 
 
 @pytest.fixture()
 def pase_firma_rechazada(pase_entorno):
-    # PrivySignerError: `sign_solana` falló. También antes de que exista fila.
+    # PrivySignerError: `sign_solana` failed. Also before any row exists.
     pase_entorno.mando["firmar"] = PrivySignerError("privy rpc unavailable")
     return pase_entorno
 
 
 @pytest.fixture()
 def pase_construccion_revienta(pase_entorno):
-    # Un `ValueError` cualquiera saliendo de construir: la familia de fallos que encerró wallets
-    # tres rondas seguidas. Con el orden nuevo ni siquiera hace falta reconocerla por su tipo.
+    # Any `ValueError` coming out of building: the family of failures that locked out wallets
+    # three rounds in a row. With the new order it does not even need to be recognized by type.
     pase_entorno.mando["firmar"] = ValueError("String is the wrong size")
     return pase_entorno
 
 
 @pytest.fixture()
 def pase_envio_rechazado(pase_entorno):
-    # RuntimeError DESDE EL ENVÍO: el RPC rechazó `sendTransaction` de forma explícita (ver
-    # nft_transfer.py). El dinero no se movió — un rechazo de ESE nodo, no una garantía absoluta
-    # de red, pero la mejor lectura que tenemos con lo que contestó.
+    # RuntimeError FROM THE SEND: the RPC explicitly rejected `sendTransaction` (see
+    # nft_transfer.py). The money did not move (a rejection from THAT node, not an absolute
+    # network guarantee, but the best reading we have from what it answered).
     pase_entorno.mando["enviar"] = RuntimeError("sendTransaction failed")
     return pase_entorno
 
 
 @pytest.fixture()
 def pase_envio_indeterminado(pase_entorno):
-    # Cualquier otra excepción DESDE EL ENVÍO: un timeout, un 5xx del proxy tras reenviar... No
-    # sabemos si la transacción salió, porque pasó ya en el POST de `sendTransaction`.
-    pase_entorno.mando["enviar"] = TimeoutError("el RPC no respondió")
+    # Any other exception FROM THE SEND: a timeout, a 5xx from the proxy after retrying... We
+    # do not know whether the transaction went through, because it already happened in the
+    # `sendTransaction` POST.
+    pase_entorno.mando["enviar"] = TimeoutError("the RPC did not answer")
     return pase_entorno
 
 
 @pytest.fixture()
 def pase_cobro_sin_confirmar(pase_entorno):
-    # False: la cadena la ejecutó y la RECHAZÓ (`err` presente). Rechazo definitivo, salió y cayó
-    # con un motivo que consta.
+    # False: the chain executed it and REJECTED it (`err` present). Definitive rejection: it went
+    # out and it fell, with a reason on record.
     pase_entorno.mando["confirma"] = False
     return pase_entorno
 
 
 @pytest.fixture()
 def pase_confirmacion_indeterminada(pase_entorno):
-    # None: se agotaron los intentos sin ver ni un `err` ni una confirmación.
+    # None: the retries ran out without ever seeing an `err` or a confirmation.
     pase_entorno.mando["confirma"] = None
     return pase_entorno
 
 
-# ── Construcción REAL, sin mockear: los fallos que ningún test podía ver ─────────────────────
+# ── REAL construction, unmocked: the failures no test could see ─────────────────────────────
 
 
 @pytest.fixture()
 def pase_construccion_real(monkeypatch):
-    """Todo bien configurado, pero construyendo y firmando DE VERDAD. Solo el envío está
-    intervenido."""
+    """Everything configured correctly, but building and signing FOR REAL. Only the send is
+    intercepted."""
     return _crear_pase_entorno(monkeypatch, construccion_real=True)
 
 
 @pytest.fixture()
 def pase_mint_malo(monkeypatch):
-    """El `cc_usdc_mint` mal escrito, construyendo de verdad: `Pubkey.from_string` levanta
-    `ValueError` DENTRO de `build_token_transfer`, antes de firmar y de enviar nada."""
+    """The `cc_usdc_mint` misspelled, building for real: `Pubkey.from_string` raises
+    `ValueError` INSIDE `build_token_transfer`, before signing or sending anything."""
     return _crear_pase_entorno(monkeypatch, construccion_real=True, cc_usdc_mint="no-es-un-mint")
 
 
 @pytest.fixture()
 def pase_operador_mal_escrito(monkeypatch):
-    """La dirección del OPERADOR con un typo (le falta un carácter), construyendo de verdad.
+    """The OPERATOR address with a typo (missing a character), building for real.
 
-    La wallet de DESTINO se configura aparte y bien, para que el 503 de configuración no tape el
-    caso: lo que revienta aquí es el `fee_payer` de la transacción, que el endpoint no valida y
-    que por tanto solo falla al construir — la trampa exacta de la ronda 3.
+    The DESTINATION wallet is configured separately and correctly, so the configuration 503
+    does not mask the case: what blows up here is the transaction's `fee_payer`, which the
+    endpoint does not validate and which therefore only fails at build time (round 3's exact
+    trap).
     """
     return _crear_pase_entorno(
         monkeypatch, construccion_real=True,

@@ -19,11 +19,11 @@ def make_session_factory(engine):
 # new TABLES but never adds COLUMNS to pre-existing ones, so we guard each new column with
 # an ADD COLUMN that runs only when the column is missing. Extend this list when adding columns.
 _ENSURE_COLUMNS = [
-    # DECIMAL, no entero: con el gacha a 0.01 por dólar un sobre de 50 $ vale medio punto, y
-    # redondeando se quedaba en cero justo en las dos máquinas más jugadas. Las bases de datos que ya
-    # existen NO necesitan migración: SQLite tiene tipado por afinidad y una columna declarada
-    # INTEGER guarda 0.5 tal cual (comprobado: `typeof` devuelve `real`), porque solo convierte a
-    # entero cuando no se pierde nada. El FLOAT es para las que se creen a partir de ahora.
+    # DECIMAL, not integer: with the gacha at 0.01 per dollar, a 50 $ pack is worth half a point,
+    # and rounding used to leave it at zero right on the two most played machines. Databases that
+    # already exist do NOT need a migration: SQLite types by affinity, and a column declared
+    # INTEGER stores 0.5 as is (checked: `typeof` returns `real`), because it only converts to an
+    # integer when nothing is lost. The FLOAT is for the ones created from now on.
     ("users", "gimmighouls", "FLOAT NOT NULL DEFAULT 0"),
     ("users", "referred_by", "VARCHAR"),
     ("users", "withdraw_address", "VARCHAR"),
@@ -78,17 +78,18 @@ _ENSURE_INDEXES = [
     # el de wallet, así que va aquí también. Único, igual que en el modelo.
     ("users", "ux_users_alias_lower",
      "CREATE UNIQUE INDEX IF NOT EXISTS ux_users_alias_lower ON users (lower(alias))"),
-    # La puerta de acceso del tracker busca "¿tiene esta wallet un pase activo que no haya
-    # caducado?" en cada carga. Sin este índice compuesto sería SCAN de tracker_passes entera.
+    # The tracker access gate asks "does this wallet have an active pass that has not expired?"
+    # on every load. Without this composite index it would be a SCAN of the whole tracker_passes.
     ("tracker_passes", "ix_tracker_passes_wallet_status_ends",
      "CREATE INDEX IF NOT EXISTS ix_tracker_passes_wallet_status_ends "
      "ON tracker_passes (wallet, status, ends_at)"),
-    # Dos peticiones de compra a la vez de la misma wallet no pueden cobrar dos veces. El endpoint
-    # ya comprueba "¿tiene una pending?" antes de insertar, pero eso es un check-then-act: entre
-    # el SELECT y el INSERT cabe una segunda petición que pase la misma comprobación. Este índice
-    # es la parte atómica de esa garantía; sin él, el check de la app es solo una sugerencia.
-    # Parcial (`WHERE status = 'pending'`) a propósito: una wallet acumula muchas filas
-    # `active`/`failed` en su historial, y solo puede tener UNA compra a medio camino a la vez.
+    # Two purchase requests at once from the same wallet cannot charge twice. The endpoint
+    # already checks "is there a pending one?" before inserting, but that is a check-then-act:
+    # between the SELECT and the INSERT there is room for a second request to pass the same
+    # check. This index is the atomic part of that guarantee; without it, the app's check is
+    # only a suggestion. Partial (`WHERE status = 'pending'`) on purpose: a wallet accumulates
+    # many `active`/`failed` rows in its history, and can only have ONE purchase midway at a
+    # time.
     ("tracker_passes", "uq_tracker_passes_pending_wallet",
      "CREATE UNIQUE INDEX IF NOT EXISTS uq_tracker_passes_pending_wallet "
      "ON tracker_passes (wallet) WHERE status = 'pending'"),

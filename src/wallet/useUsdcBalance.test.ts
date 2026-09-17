@@ -8,7 +8,7 @@ vi.mock('../onchain/config', () => ({ config: { backendUrl: 'http://backend' } }
 
 import { useUsdcBalance, useCardsBalance } from './useUsdcBalance'
 
-/** Pone la pestaña a la vista o de fondo y lanza el evento, como haría el navegador. */
+/** Puts the tab on screen or in the background and fires the event, as the browser would. */
 function verPestana(visible: boolean) {
   Object.defineProperty(document, 'visibilityState', {
     configurable: true,
@@ -22,10 +22,10 @@ const respuesta = (usdc: number) =>
 
 let fetchMock: ReturnType<typeof vi.fn>
 
-/** Cuántas veces se ha ido al backend. Cada una es una llamada al RPC. */
+/** How many times it went to the backend. Each one is an RPC call. */
 const consultas = () => fetchMock.mock.calls.length
 
-describe('useUsdcBalance: solo consulta el saldo con la pestaña a la vista', () => {
+describe('useUsdcBalance: only queries the balance with the tab in view', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     token = 'tok'
@@ -38,7 +38,7 @@ describe('useUsdcBalance: solo consulta el saldo con la pestaña a la vista', ()
     vi.unstubAllGlobals()
   })
 
-  it('con la pestaña a la vista refresca cada 30 segundos', async () => {
+  it('with the tab in view, it refreshes every 30 seconds', async () => {
     renderHook(() => useUsdcBalance())
     await act(async () => { await vi.advanceTimersByTimeAsync(0) })
     expect(consultas()).toBe(1)                               // la de entrada
@@ -49,42 +49,42 @@ describe('useUsdcBalance: solo consulta el saldo con la pestaña a la vista', ()
     expect(consultas()).toBe(3)
   })
 
-  it('en segundo plano deja de consultar del todo', async () => {
+  it('in the background, it stops querying altogether', async () => {
     renderHook(() => useUsdcBalance())
     await act(async () => { await vi.advanceTimersByTimeAsync(0) })
     const antes = consultas()
 
     await act(async () => { verPestana(false) })
-    // Cinco minutos escondida: ni una sola llamada más. Es el ahorro entero del cambio.
+    // Five minutes hidden: not one more call. That is the entire saving of this change.
     await act(async () => { await vi.advanceTimersByTimeAsync(300_000) })
     expect(consultas()).toBe(antes)
   })
 
-  it('al volver a la pestaña refresca en el acto, sin esperar los 30 segundos', async () => {
+  it('coming back to the tab refreshes right away, without waiting the 30 seconds', async () => {
     renderHook(() => useUsdcBalance())
     await act(async () => { await vi.advanceTimersByTimeAsync(0) })
     await act(async () => { verPestana(false) })
     await act(async () => { await vi.advanceTimersByTimeAsync(300_000) })
     const escondida = consultas()
 
-    // Sin esto se vería el número congelado de hace horas, que es peor que no haber parado.
+    // Without this you would see the number frozen hours ago, worse than never having stopped.
     await act(async () => { verPestana(true) })
     expect(consultas()).toBe(escondida + 1)
   })
 
-  it('al volver reanuda el ciclo, y no lo duplica', async () => {
+  it('coming back resumes the cycle, and does not duplicate it', async () => {
     renderHook(() => useUsdcBalance())
     await act(async () => { await vi.advanceTimersByTimeAsync(0) })
     await act(async () => { verPestana(false) })
     await act(async () => { verPestana(true) })
     const tras_volver = consultas()
 
-    // Un solo intervalo vivo: 30 s son exactamente una consulta más, no dos.
+    // A single live interval: 30 s is exactly one more query, not two.
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
     expect(consultas()).toBe(tras_volver + 1)
   })
 
-  it('al desmontar no deja nada corriendo, ni el intervalo ni el oyente', async () => {
+  it('unmounting leaves nothing running, neither the interval nor the listener', async () => {
     const { unmount } = renderHook(() => useUsdcBalance())
     await act(async () => { await vi.advanceTimersByTimeAsync(0) })
     unmount()
@@ -95,7 +95,7 @@ describe('useUsdcBalance: solo consulta el saldo con la pestaña a la vista', ()
     expect(consultas()).toBe(alDesmontar)
   })
 
-  it('devuelve el saldo que da el backend', async () => {
+  it('returns the balance the backend gives', async () => {
     const { result } = renderHook(() => useUsdcBalance())
     await act(async () => { await vi.advanceTimersByTimeAsync(0) })
     expect(result.current.usdc).toBe(42)

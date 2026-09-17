@@ -15,8 +15,8 @@ import { config } from '../onchain/config'
 // Parameterised by endpoint + response field so USDC and CARDS (and any future SPL balance we
 // expose the same way) share one polling/freeze implementation instead of two copies.
 //
-// Se refresca cada 30s SOLO con la pestaña a la vista, y se refresca una vez al volver a ella.
-// El motivo está junto al código, abajo: cada consulta cuesta una llamada al RPC.
+// It refreshes every 30s ONLY while the tab is on screen, and refreshes once on coming back to
+// it. The reason sits next to the code below: every query costs one RPC call.
 
 function useTokenBalance(endpoint: string, field: string, label: string): { balance: number | null; loading: boolean } {
   // Al soltar la congelación hay que repintar en cuanto se pueda: si no, el saldo real tardaría
@@ -71,15 +71,16 @@ function useTokenBalance(endpoint: string, field: string, label: string): { bala
       }
     }
 
-    // Solo se pregunta mientras la pestaña se VE. Cada consulta es una llamada al RPC por usuario
-    // conectado (la hace el backend en su nombre), así que una pestaña olvidada abierta toda la
-    // noche gastaba unas 2.880 sin que nadie mirara el saldo.
+    // It only asks while the tab is BEING SEEN. Every query is one RPC call per connected user
+    // (the backend makes it on their behalf), so a tab left open and forgotten all night burned
+    // about 2,880 of them with nobody looking at the balance.
     //
-    // Al volver se refresca ANTES de reanudar el ciclo. Sin eso, lo primero que vería quien vuelve
-    // sería el número congelado de hace horas, que es peor que no haber parado nunca.
+    // On coming back it refreshes BEFORE resuming the cycle. Without that, the first thing
+    // someone returning would see is the number frozen hours ago, which is worse than never
+    // having stopped at all.
     //
-    // "Visible" no es "con el foco": dos ventanas lado a lado cuentan las dos como visibles, y es
-    // lo correcto, porque se están viendo.
+    // "Visible" is not "focused": two windows side by side both count as visible, and that is
+    // right, because they are both being seen.
     const isVisible = () => typeof document === 'undefined' || document.visibilityState !== 'hidden'
 
     const startPolling = () => {

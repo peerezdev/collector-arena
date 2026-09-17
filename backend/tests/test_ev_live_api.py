@@ -22,9 +22,9 @@ from tests.test_chain_mock import MockChainSource
 
 AHORA = datetime.now(timezone.utc)
 
-# `/gacha/ev/live` cerró sus puertas junto con `/gacha/ev` (tarea 7): igual que en
-# `test_ev_respaldo.py`, la wallet de prueba entra por la lista blanca de la casa para que este
-# fichero pueda seguir probando solo el carril rápido, no el acceso.
+# `/gacha/ev/live` closed its doors together with `/gacha/ev` (task 7): same as in
+# `test_ev_respaldo.py`, the test wallet gets in through the house's whitelist so this file can
+# keep testing only the fast lane, not access.
 WALLET = "8QDBKx8P3pxkRhiqyXFtYcPPf2CM1F5NiE5A8yjkgtm6"
 
 
