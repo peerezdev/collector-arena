@@ -1105,9 +1105,15 @@ def create_app(session_factory, chain: ChainSource,
                 return {"rows": _ev_cache["filas"], "updated_at": int(_ev_cache["t"])}
             filas = await run_in_threadpool(_calcular_filas)
             filas.sort(key=lambda f: (f["realized_edge_pct"] is None, -(f["realized_edge_pct"] or 0)))
+            # Se sella con la hora de TERMINAR, no con la de empezar. Sellarla al empezar la hacía
+            # nacer caducada —el cálculo tarda 106 s y la caché dura 60—, así que el siguiente de
+            # la cola la veía vencida y volvía a calcular: el cerrojo agrupaba la espera pero no
+            # ahorraba ni un cálculo. Medido en mainnet: 10 peticiones, 10 cálculos, con el
+            # cerrojo puesto.
+            terminado = _time.time()
             if hours == 48:
-                _ev_cache.update(t=ahora, filas=filas)
-        return {"rows": filas, "updated_at": int(ahora)}
+                _ev_cache.update(t=terminado, filas=filas)
+        return {"rows": filas, "updated_at": int(terminado)}
 
     # El carril rápido. Lleva SOLO las rachas, y esa frontera está puesta a conciencia: son las dos
     # únicas cosas que cambian con cada tirada y a la vez cuestan una consulta, mientras que el

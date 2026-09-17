@@ -73,3 +73,37 @@ async def test_todas_reciben_las_mismas_filas(monkeypatch):
 
     for r in respuestas:
         assert r.json()["rows"], "una respuesta sin filas no le sirve a nadie"
+
+
+@pytest.mark.asyncio
+async def test_la_cache_se_sella_al_TERMINAR_no_al_empezar(monkeypatch):
+    """`updated_at` tiene que ser la hora de ACABAR el cálculo, no la de empezarlo.
+
+    Sellarla al empezar la hace nacer caducada en cuanto el cálculo dura más que el TTL, y
+    entonces el siguiente de la cola vuelve a calcular: el cerrojo agrupa la espera pero no ahorra
+    ni un cálculo. Medido en mainnet el 17/09 con un cálculo de 106 s y una caché de 60: diez
+    peticiones simultáneas produjeron diez cálculos CON el cerrojo puesto.
+
+    Se usa un cálculo deliberadamente lento (2,5 s) porque con uno instantáneo las dos formas de
+    sellar dan el mismo número y el test no probaría nada.
+    """
+    contador = {"n": 0}
+    lento = 2.5
+
+    def fila_muy_lenta(s, code, **kw):
+        contador["n"] += 1
+        time.sleep(lento)
+        return {"machine": code, "realized_edge_pct": 1.0}
+
+    app = _app(monkeypatch, contador)
+    monkeypatch.setattr(main_mod, "fila_ev", fila_muy_lenta)
+
+    t0 = time.time()
+    transporte = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transporte, base_url="http://t") as c:
+        r = await c.get("/gacha/ev", timeout=30)
+
+    sellado = r.json()["updated_at"]
+    assert sellado >= int(t0 + lento) - 1, (
+        f"sellada en {sellado} cuando el cálculo acabó sobre {int(t0 + lento)}: "
+        "se está sellando con la hora de EMPEZAR, y así la caché nace caducada")
