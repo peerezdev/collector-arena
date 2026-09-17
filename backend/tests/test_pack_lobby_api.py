@@ -81,10 +81,13 @@ def _auth_headers(priv, addr: str, wallet_id: str) -> dict:
 # The actual balance check is monkeypatched so no RPC call is made.
 DUMMY_RPC = "https://api.devnet.solana.com"
 DUMMY_MINT = "Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG9Vp2KGtKJr"
+# Mint DISTINTO del de USDC a propósito: el test que más importa es el que comprueba que un
+# withdraw de CARDS usa ESTE mint y no el de arriba — mezclarlos mandaría el token equivocado.
+DUMMY_CARDS_MINT = "CARDSccUMFKoPRZxt5vt3ksUbxEFEcnZ3H2pd3dKxYjp"
 
 
 def _build_client(signer=None, dev_endpoints_enabled=False, withdraw_fee_pct=0.0, fee_wallet_address="",
-                  royale_creator_allowlist=None):
+                  royale_creator_allowlist=None, cards_airdrop_mint="", min_withdraw_cards=1.0):
     engine = create_engine(
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -110,11 +113,13 @@ def _build_client(signer=None, dev_endpoints_enabled=False, withdraw_fee_pct=0.0
         withdraw_fee_pct=withdraw_fee_pct,
         fee_wallet_address=fee_wallet_address,
         royale_creator_allowlist=royale_creator_allowlist,
+        cards_airdrop_mint=cards_airdrop_mint,
+        min_withdraw_cards=min_withdraw_cards,
     )
     return TestClient(app, raise_server_exceptions=True), priv
 
 
-def _build_client_with_sf(signer=None):
+def _build_client_with_sf(signer=None, cards_airdrop_mint=""):
     """Like _build_client, but also returns the session_factory so a test can seed rows directly
     (needed to exercise the startup sweep against pre-existing 'voided' battles)."""
     engine = create_engine(
@@ -133,6 +138,7 @@ def _build_client_with_sf(signer=None):
         privy_operator_wallet_id="op-wallet-id",
         privy_operator_address="So1anaOPERATOR1111111111111111111111111111",
         escrow_seed_lamports=10_000_000,
+        cards_airdrop_mint=cards_airdrop_mint,
     )
     return sf, TestClient(app, raise_server_exceptions=True), priv
 
@@ -1202,6 +1208,128 @@ def test_withdraw_no_fee_when_pct_zero(monkeypatch):
     assert used == {"plain": True, "fee": False}
 
 
+# ── CARDS withdraw (airdrop de Collector Crypt, mismo endpoint con token="cards") ──────────────
+
+def test_withdraw_cards_usa_el_mint_de_cards_no_el_de_usdc(monkeypatch):
+    """El fallo caro aquí es mezclar mints: si un withdraw con token="cards" saliera firmado con
+    el mint de USDC, el jugador recibiría el token equivocado (o nada, si no tiene esa ATA)."""
+    captured = {}
+
+    async def _high_balance(*a, **k):
+        return 1_000_000_000
+
+    async def _bh(*a, **k):
+        return "11111111111111111111111111111111"
+
+    async def _wd(rpc, signer, pwid, paddr, owid, oaddr, dest, mint, amount, bh):
+        captured.update(mint=mint, amount=amount, dest=dest)
+        return "sig-cards"
+
+    monkeypatch.setattr("app.main.usdc_balance_base_units", _high_balance)
+    monkeypatch.setattr("app.main.fetch_latest_blockhash", _bh)
+    monkeypatch.setattr("app.main.withdraw_usdc", _wd)
+
+    c, priv = _build_client(signer=object(), cards_airdrop_mint=DUMMY_CARDS_MINT,
+                            withdraw_fee_pct=0.05, fee_wallet_address="So1anaFEEWALLET1111111111111111111111111111")
+    hdrs = _auth_headers(priv, WALLET_A, WALLET_ID_A)
+    r = c.post("/users/me/withdraw", json={"address": WALLET_B, "amount": 10.0, "token": "cards"}, headers=hdrs)
+
+    assert r.status_code == 200, r.text
+    assert captured["mint"] == DUMMY_CARDS_MINT
+    assert captured["mint"] != DUMMY_MINT
+    assert captured["amount"] == 10_000_000
+    assert captured["dest"] == WALLET_B
+
+
+def test_withdraw_cards_no_cobra_comision(monkeypatch):
+    """CARDS nunca pasa por withdraw_usdc_with_fee, ni siquiera con withdraw_fee_pct configurado:
+    la comisión grava dinero que SALE de la economía de la plataforma, y CARDS nunca entró."""
+    used_fee_path = {"called": False}
+
+    async def _high_balance(*a, **k):
+        return 1_000_000_000
+
+    async def _bh(*a, **k):
+        return "11111111111111111111111111111111"
+
+    async def _wd(*a, **k):
+        return "sig-cards"
+
+    async def _wf(*a, **k):
+        used_fee_path["called"] = True
+        return "sig-fee"
+
+    monkeypatch.setattr("app.main.usdc_balance_base_units", _high_balance)
+    monkeypatch.setattr("app.main.fetch_latest_blockhash", _bh)
+    monkeypatch.setattr("app.main.withdraw_usdc", _wd)
+    monkeypatch.setattr("app.main.withdraw_usdc_with_fee", _wf)
+
+    c, priv = _build_client(signer=object(), cards_airdrop_mint=DUMMY_CARDS_MINT,
+                            withdraw_fee_pct=0.1, fee_wallet_address="So1anaFEEWALLET1111111111111111111111111111")
+    hdrs = _auth_headers(priv, WALLET_A, WALLET_ID_A)
+    r = c.post("/users/me/withdraw", json={"address": WALLET_B, "amount": 10.0, "token": "cards"}, headers=hdrs)
+
+    assert r.status_code == 200, r.text
+    assert used_fee_path["called"] is False
+    body = r.json()
+    assert body["fee"] == 0.0
+    assert body["net"] == 10.0
+
+
+def test_withdraw_cards_no_lo_bloquea_una_partida_en_curso(monkeypatch):
+    """CARDS no se apuesta en ninguna batalla, así que una partida abierta no le da destino a
+    este saldo — a diferencia de USDC (ver test_withdraw_bloqueado_con_partida_sin_terminar)."""
+    from app.models import PackBattle, BattlePlayer
+    sf, c, priv = _build_client_with_sf(signer=object(), cards_airdrop_mint=DUMMY_CARDS_MINT)
+
+    async def _high_balance(*a, **k):
+        return 1_000_000_000
+
+    async def _bh(*a, **k):
+        return "11111111111111111111111111111111"
+
+    async def _wd(*a, **k):
+        return "sig-cards"
+
+    monkeypatch.setattr("app.main.usdc_balance_base_units", _high_balance)
+    monkeypatch.setattr("app.main.fetch_latest_blockhash", _bh)
+    monkeypatch.setattr("app.main.withdraw_usdc", _wd)
+
+    with sf() as s:
+        s.add(PackBattle(id="r-cards", mode="royale", machine_code="m", price=25_000_000,
+                         max_players=5, status="running"))
+        s.add(BattlePlayer(battle_id="r-cards", player_wallet=WALLET_A))
+        s.commit()
+
+    hdrs = _auth_headers(priv, WALLET_A, WALLET_ID_A)
+    r = c.post("/users/me/withdraw", json={"address": WALLET_B, "amount": 10.0, "token": "cards"}, headers=hdrs)
+    assert r.status_code == 200, r.text
+
+
+def test_withdraw_cards_bajo_minimo_rechazado():
+    """CARDS tiene su propio mínimo (min_withdraw_cards), independiente del de USDC."""
+    c, priv = _build_client(signer=object(), cards_airdrop_mint=DUMMY_CARDS_MINT, min_withdraw_cards=5.0)
+    hdrs = _auth_headers(priv, WALLET_A, WALLET_ID_A)
+    r = c.post("/users/me/withdraw", json={"address": WALLET_B, "amount": 1.0, "token": "cards"}, headers=hdrs)
+    assert r.status_code == 422, r.text
+    assert "minimum withdrawal" in r.json()["detail"]
+
+
+def test_withdraw_cards_sin_mint_configurado_da_503():
+    """Sin cards_airdrop_mint configurado, "indisponible" y no "no": mismo criterio que el claim."""
+    c, priv = _build_client(signer=object())  # cards_airdrop_mint="" por defecto
+    hdrs = _auth_headers(priv, WALLET_A, WALLET_ID_A)
+    r = c.post("/users/me/withdraw", json={"address": WALLET_B, "amount": 10.0, "token": "cards"}, headers=hdrs)
+    assert r.status_code == 503, r.text
+
+
+def test_withdraw_token_invalido_da_422():
+    c, priv = _build_client(signer=object(), cards_airdrop_mint=DUMMY_CARDS_MINT)
+    hdrs = _auth_headers(priv, WALLET_A, WALLET_ID_A)
+    r = c.post("/users/me/withdraw", json={"address": WALLET_B, "amount": 10.0, "token": "sol"}, headers=hdrs)
+    assert r.status_code == 422, r.text
+
+
 # ── Join All Bots (DEV/TEST) ──────────────────────────────────────────────────
 
 _BOTS_3 = [
@@ -1515,6 +1643,37 @@ def test_me_usdc_requires_auth(client_priv):
     assert c.get("/users/me/usdc").status_code == 401
 
 
+def test_me_cards_reads_onchain_balance(monkeypatch):
+    """GET /users/me/cards mirrors /users/me/usdc but reads the CARDS airdrop mint."""
+    c, priv = _build_client(cards_airdrop_mint=DUMMY_CARDS_MINT)
+    seen = {}
+
+    async def _balance(rpc_url, owner, mint, *args, **kwargs):
+        seen["rpc_url"], seen["owner"], seen["mint"] = rpc_url, owner, mint
+        return 1_200_000  # 1.2 CARDS in base units
+
+    monkeypatch.setattr("app.main.usdc_balance_base_units", _balance)
+
+    hdrs = _auth_headers(priv, WALLET_A, WALLET_ID_A)
+    r = c.get("/users/me/cards", headers=hdrs)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"base_units": 1_200_000, "cards": 1.2}
+    assert seen == {"rpc_url": DUMMY_RPC, "owner": WALLET_A, "mint": DUMMY_CARDS_MINT}
+
+
+def test_me_cards_sin_mint_configurado_da_503():
+    """Igual que el withdraw de CARDS: sin mint no hay lectura posible, y eso es 503."""
+    c, priv = _build_client()  # cards_airdrop_mint="" por defecto
+    hdrs = _auth_headers(priv, WALLET_A, WALLET_ID_A)
+    assert c.get("/users/me/cards", headers=hdrs).status_code == 503
+
+
+def test_me_cards_requires_auth():
+    """No Bearer token → 401, igual que /users/me/usdc."""
+    c, _ = _build_client(cards_airdrop_mint=DUMMY_CARDS_MINT)
+    assert c.get("/users/me/cards").status_code == 401
+
+
 # ── máquinas apagadas a mano: no se pueden estrenar partidas con ellas ─────────
 # Apagar una máquina (scripts/machines.py) la quita del catálogo. Estos tests fijan que la puerta
 # está en AMBOS modos, no solo en la pantalla: alguien que llame a la API a pelo con el código
@@ -1688,3 +1847,32 @@ def test_sin_privy_configurado_no_se_comprueba_nada(monkeypatch):
     r = c.post("/pack-battles", json={"machine_code": "pokemon_50", "max_players": 2},
                headers=_auth_headers(priv, WALLET_A, WALLET_ID_A))
     assert r.status_code == 200, r.text
+
+
+def test_el_502_del_retiro_de_cards_no_filtra_la_url_del_rpc(monkeypatch):
+    """El str() de un error de httpx incluye la URL del RPC, y en mainnet esa URL lleva la
+    api-key en la query. Un 429 del proveedor no puede acabar entregándole la clave al
+    navegador del jugador."""
+    SECRETO = "https://mainnet.helius-rpc.com/?api-key=NO-DEBE-SALIR"
+
+    async def _high_balance(*a, **k):
+        return 1_000_000_000
+
+    async def _bh(*a, **k):
+        return "11111111111111111111111111111111"
+
+    async def _revienta(*a, **k):
+        raise RuntimeError(f"Client error '429 Too Many Requests' for url '{SECRETO}'")
+
+    monkeypatch.setattr("app.main.usdc_balance_base_units", _high_balance)
+    monkeypatch.setattr("app.main.fetch_latest_blockhash", _bh)
+    monkeypatch.setattr("app.main.withdraw_usdc", _revienta)
+
+    c, priv = _build_client(signer=object(), cards_airdrop_mint=DUMMY_CARDS_MINT)
+    hdrs = _auth_headers(priv, WALLET_A, WALLET_ID_A)
+    r = c.post("/users/me/withdraw", json={"address": WALLET_B, "amount": 10.0, "token": "cards"},
+               headers=hdrs)
+
+    assert r.status_code == 502
+    assert "NO-DEBE-SALIR" not in r.text
+    assert "api-key" not in r.text

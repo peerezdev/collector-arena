@@ -20,6 +20,7 @@ import { DemoPicker } from './DemoPicker'
 import { loadMachineList } from '../../useMachines'
 import { canCreateRoyale } from '../../../onchain/config'
 import { leerModos, paramModos } from './lobbyFilter'
+import { ClaimBanner } from './ClaimBanner'
 
 /**
  * El Lobby: TODAS las partidas abiertas, con el modo como filtro.
@@ -85,6 +86,11 @@ export function LobbyPage() {
 
   return (
     <div style={{ padding: '24px clamp(14px,2.4vw,28px) 44px', display: 'flex', flexDirection: 'column', gap: 26 }}>
+      {/* Por encima incluso de la guía: es lo único de esta página que CADUCA. Cuando CC cierre
+          la bóveda deja de tener sentido, y hasta entonces el que tiene tokens sin reclamar
+          quiere enterarse antes de ponerse a mirar partidas. Se descarta y no vuelve. */}
+      <ClaimBanner />
+
       {/* Arriba del todo: es lo que contesta "¿qué es esto?", y esa pregunta llega antes que
           cualquier otra. Plegable y con memoria, así que quien ya lo sabe la cierra una vez y le
           queda una sola línea. */}

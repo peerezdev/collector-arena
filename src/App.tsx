@@ -13,6 +13,7 @@ import { LeaderboardPage } from './ui/screens/Leaderboard/LeaderboardPage'
 import { HelpPage } from './ui/screens/Help/HelpPage'
 import { WinnersPage } from './ui/screens/Winners/WinnersPage'
 import { MachineTrackerPage } from './ui/screens/MachineTracker/MachineTrackerPage'
+import { ClaimScreen } from './ui/screens/Claim/ClaimScreen'
 import { usePrivy } from '@privy-io/react-auth'
 
 const GachaVault = lazy(() => import('./ui/screens/gacha/GachaVault'))
@@ -84,6 +85,9 @@ export default function App() {
           {/* El feed de ganadores sigue accesible por URL, pero fuera de la barra. */}
           <Route path="/winners" element={<WinnersPage />} />
           <Route path="/help" element={<HelpPage />} />
+          {/* Fuera de la barra a propósito: se enlaza desde fuera (un tuit) y deja de tener
+              sentido en cuanto CC cierre la bóveda, así que no merece un hueco fijo en el menú. */}
+          <Route path="/claim" element={<ClaimScreen />} />
         </Route>
         <Route path="*" element={<Entrada />} />
       </Routes>

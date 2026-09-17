@@ -1,71 +1,71 @@
-# Despliegue — BattleArena mainnet
+# Deployment: Collector Arena mainnet
 
-**Dos variantes, mismo stack.** Elige una:
+**Two variants, same stack.** Pick one:
 
-| | Dónde | TLS | Caddyfile | Guía |
+| | Where | TLS | Caddyfile | Guide |
 |---|---|---|---|---|
-| **Mini PC en casa** | tu máquina, sin IP pública | Cloudflare Tunnel | `Caddyfile.tunnel` | [INSTALL-MINIPC.md](INSTALL-MINIPC.md) ← empieza aquí |
-| **VPS** | proveedor cloud | Caddy + Let's Encrypt | `Caddyfile` | este documento |
+| **Mini PC at home** | your machine, no public IP | Cloudflare Tunnel | `Caddyfile.tunnel` | [INSTALL-MINIPC.md](INSTALL-MINIPC.md) ← start here |
+| **VPS** | cloud provider | Caddy + Let's Encrypt | `Caddyfile` | this document |
 
-Ficheros: `bootstrap-minipc.sh` (prepara la máquina, idempotente) · `deploy.sh` (desplegar) ·
-`verify.sh` (comprobación completa antes de abrir) · `backup.sh` (copia de la DB a offsite) ·
-`systemd/` (los dos servicios) · `cloudflared/` (config del túnel).
+Files: `bootstrap-minipc.sh` (prepares the machine, idempotent) · `deploy.sh` (deploy) ·
+`verify.sh` (full check before opening up) · `backup.sh` (DB copy to offsite storage) ·
+`systemd/` (the two services) · `cloudflared/` (tunnel config).
 
-Servidor único con root, Debian 12 o Ubuntu 24.04, **en US East**. Cualquier VPS KVM sirve — la
-guía no depende del proveedor.
+A single server with root, Debian 12 or Ubuntu 24.04, **in US East**. Any KVM VPS works; the guide
+doesn't depend on the provider.
 
-**Requisitos reales:** 2 vCPU y **2 GB de RAM bastan en marcha** (dos uvicorn + Caddy + SQLite
-rondan los 500 MB). Los 4 GB que se suelen recomendar son solo por el `npm run build` del
-frontend (three.js + Vite). Con 2 GB, **añade 2 GB de swap** antes del primer deploy y el build
-pasa igual, solo que más lento:
+**Real requirements:** 2 vCPU and **2 GB of RAM are enough at runtime** (two uvicorn processes +
+Caddy + SQLite come to about 500 MB). The 4 GB usually recommended is only for the frontend's
+`npm run build` (three.js + Vite). With 2 GB, **add 2 GB of swap** before the first deploy and the
+build still passes, just more slowly:
 
 ```bash
 fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
 echo '/swapfile none swap sw 0 0' >> /etc/fstab
 ```
 
-**Por qué US East y no Europa:** el backend habla mucho con servicios que están en EEUU (API de
-gacha de Collector Crypt, Helius, RPC de Solana) y confirma transacciones con hasta 20 reintentos
-de 1,5 s. Esa latencia pesa más en la experiencia que la del jugador al servidor.
+**Why US East and not Europe:** the backend talks a lot to services based in the US (Collector
+Crypt's gacha API, Helius, the Solana RPC) and confirms transactions with up to 20 retries of 1.5 s.
+That latency weighs more on the experience than the player's latency to the server.
 
-> Hetzner subió los precios de sus localizaciones de EEUU el 15/06/2026 (CPX21 Ashburn: 37,49
-> $/mes). Ya no es la opción barata en América; sigue siéndolo en Alemania/Finlandia si aceptas
-> la latencia a las APIs.
+> Hetzner raised prices for its US locations on 2026-06-15 (CPX21 Ashburn: $37.49/month). It's no
+> longer the cheap option in America; it still is in Germany/Finland if you accept the latency to the
+> APIs.
 
 ```
-Caddy :443 ──┬─ rutas del backend (Accept ≠ text/html) ──→ 127.0.0.1:9190  backend
-             ├─ /ws  (WebSocket)                       ──→ 127.0.0.1:9190
-             ├─ /attest /pubkey                        ──→ 127.0.0.1:8787  oráculo
-             └─ resto                                  ──→ /srv/battlearena/dist  (SPA)
+Caddy :443 ──┬─ backend routes (Accept ≠ text/html) ──→ 127.0.0.1:9190  backend
+             ├─ /ws  (WebSocket)                     ──→ 127.0.0.1:9190
+             ├─ /attest /pubkey                      ──→ 127.0.0.1:8787  oracle
+             └─ everything else                      ──→ /srv/battlearena/dist  (SPA)
 ```
 
-## Reglas que no se pueden romper
+## Rules that must not be broken
 
-1. **Un solo proceso de uvicorn, sin `--workers`.** El backend guarda estado en memoria por
-   proceso: rate-limits, el `asyncio.Lock` que serializa los buy-ins, el set de WebSockets y
-   tareas de fondo. Dos workers = doble settle de USDC real.
-2. **La DB es un fichero y no hay migraciones.** Disco persistente y backups offsite.
-3. **`DEV_ENDPOINTS_ENABLED` debe quedar en `false`.** `/pack-battles/{id}/join-bot` mueve USDC
-   sin autenticación.
-4. **La clave del oráculo no se regenera nunca.** Si cambia, el frontend rechaza todas las
-   atestaciones (compara contra `VITE_ORACLE_PUBKEY`, fijado en tiempo de build).
+1. **A single uvicorn process, no `--workers`.** The backend keeps in-memory state per process:
+   rate limits, the `asyncio.Lock` that serializes buy-ins, the set of WebSockets and background
+   tasks. Two workers = a double settle of real USDC.
+2. **The DB is a file and there are no migrations.** Persistent disk and offsite backups.
+3. **`DEV_ENDPOINTS_ENABLED` must stay `false`.** `/pack-battles/{id}/join-bot` moves USDC without
+   authentication.
+4. **The oracle key is never regenerated.** If it changes, the frontend rejects every attestation (it
+   compares against `VITE_ORACLE_PUBKEY`, fixed at build time).
 
 ---
 
-# Paso 0 — Servidor y DNS
+# Step 0: Server and DNS
 
-Antes que nada, porque Caddy necesita que el dominio resuelva para sacar el certificado.
+First of all, because Caddy needs the domain to resolve before it can obtain the certificate.
 
 ```bash
-# 1. Crea el CPX21 en Ashburn con Debian 12 y tu clave SSH. Entra como root.
-# 2. Apunta el DNS (Cloudflare, en gris / DNS-only de momento):
-#      A     battlearena.tld    -> <IP del servidor>
-#      AAAA  battlearena.tld    -> <IPv6 del servidor>
-# 3. Comprueba desde tu máquina que resuelve ANTES de seguir:
+# 1. Create the CPX21 in Ashburn with Debian 12 and your SSH key. Log in as root.
+# 2. Point the DNS (Cloudflare, grey / DNS-only for now):
+#      A     battlearena.tld    -> <server IP>
+#      AAAA  battlearena.tld    -> <server IPv6>
+# 3. Check from your machine that it resolves BEFORE continuing:
 dig +short battlearena.tld
 ```
 
-Sistema base:
+Base system:
 
 ```bash
 apt update && apt upgrade -y
@@ -76,12 +76,12 @@ ufw allow 22,80,443/tcp && ufw --force enable
 adduser --system --group --home /srv/battlearena battlearena
 ```
 
-Los puertos 9190 y 8787 **no** se abren: solo escuchan en loopback.
+Ports 9190 and 8787 are **not** opened: they only listen on loopback.
 
-Código y entornos virtuales:
+Code and virtual environments:
 
 ```bash
-git clone <tu-repo> /srv/battlearena
+git clone <your-repo> /srv/battlearena
 chown -R battlearena:battlearena /srv/battlearena
 
 sudo -u battlearena python3 -m venv /srv/battlearena/backend/.venv
@@ -91,37 +91,37 @@ sudo -u battlearena python3 -m venv /srv/battlearena/oracle/.venv
 sudo -u battlearena /srv/battlearena/oracle/.venv/bin/pip install -r /srv/battlearena/oracle/requirements.txt
 ```
 
-**Comprobación:** `ls /srv/battlearena/{backend,oracle}/.venv/bin/uvicorn` devuelve las dos rutas.
+**Check:** `ls /srv/battlearena/{backend,oracle}/.venv/bin/uvicorn` returns both paths.
 
 ---
 
-# Paso 1 — Oráculo (`:8787`)
+# Step 1: Oracle (`:8787`)
 
-Firma atestaciones ed25519 del valor de cada carta. Va primero porque el frontend se compila
-con su pubkey dentro.
+Signs ed25519 attestations of each card's value. It goes first because the frontend is built with
+its pubkey inside.
 
-### 1.1 Sube la clave (no la generes en el servidor)
+### 1.1 Upload the key (don't generate it on the server)
 
-`keys.py` autogenera la clave si no existe, y una clave nueva invalida el `VITE_ORACLE_PUBKEY`
-de todos los builds. Sube la que ya usas.
+`keys.py` auto-generates the key if it doesn't exist, and a new key invalidates the
+`VITE_ORACLE_PUBKEY` of every build. Upload the one you already use.
 
 ```bash
-# en el servidor
+# on the server
 mkdir -p /var/lib/battlearena
-# desde tu máquina
+# from your machine
 scp oracle/oracle_key.json root@battlearena.tld:/var/lib/battlearena/oracle_key.json
-# de vuelta en el servidor
+# back on the server
 chown -R battlearena:battlearena /var/lib/battlearena
 chmod 600 /var/lib/battlearena/oracle_key.json
 ```
 
-Guarda además una copia **fuera del servidor** (gestor de contraseñas). Si la pierdes, no hay
-forma de recuperarla.
+Also keep a copy **off the server** (a password manager). If you lose it, there is no way to recover
+it.
 
-> Va en `/var/lib` y no en `/etc` a propósito: `keys.py` hace `chmod 600` en cada carga y
-> `ProtectSystem=strict` monta `/etc` en solo lectura → el servicio no arrancaría.
+> It goes in `/var/lib` and not `/etc` on purpose: `keys.py` runs `chmod 600` on every load and
+> `ProtectSystem=strict` mounts `/etc` read-only → the service wouldn't start.
 
-### 1.2 Arranca el servicio
+### 1.2 Start the service
 
 ```bash
 cp /srv/battlearena/deploy/systemd/battlearena-oracle.service /etc/systemd/system/
@@ -129,30 +129,30 @@ systemctl daemon-reload
 systemctl enable --now battlearena-oracle
 ```
 
-### 1.3 Comprobación
+### 1.3 Check
 
 ```bash
 curl -s 127.0.0.1:8787/health     # {"status":"ok"}
 curl -s 127.0.0.1:8787/pubkey     # {"oracle_pubkey":"..."}
 ```
 
-**Apunta ese pubkey**: tiene que coincidir con el `VITE_ORACLE_PUBKEY` del paso 3. Si no
-arranca: `journalctl -u battlearena-oracle -n 50`.
+**Write down that pubkey**: it has to match `VITE_ORACLE_PUBKEY` in step 3. If it doesn't start:
+`journalctl -u battlearena-oracle -n 50`.
 
 ---
 
-# Paso 2 — Backend (`:9190`)
+# Step 2: Backend (`:9190`)
 
-### 2.1 Variables de entorno
+### 2.1 Environment variables
 
-`/srv/battlearena/backend/.env` (a mano, gitignored). Copia el de tu máquina y revisa:
+`/srv/battlearena/backend/.env` (by hand, gitignored). Copy the one from your machine and review it:
 
 ```ini
 CORS_ORIGINS=["https://battlearena.tld"]
 DEV_ENDPOINTS_ENABLED=false
-SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=<key de servidor>
+SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=<server key>
 PRIVY_APP_ID=...
-PRIVY_APP_SECRET=...          # solo aquí, jamás en el frontend
+PRIVY_APP_SECRET=...          # only here, never in the frontend
 PRIVY_OPERATOR_WALLET_ID=...
 PRIVY_OPERATOR_ADDRESS=...
 FEE_WALLET_ADDRESS=...
@@ -163,17 +163,17 @@ chown battlearena:battlearena /srv/battlearena/backend/.env
 chmod 600 /srv/battlearena/backend/.env
 ```
 
-`backend/.env.mainnet` **no viene en el repo**: `.gitignore` excluye `.env.*`, así que hay que
-crearlo en el servidor. Solo lleva overrides de red (RPC, gacha de CC, mint de USDC), sin
-secretos — esos siguen en `.env`. Lo carga `APP_NETWORK=mainnet` por encima de `.env`.
+`backend/.env.mainnet` **isn't in the repo**: `.gitignore` excludes `.env.*`, so it has to be created
+on the server. It only holds network overrides (RPC, CC gacha, USDC mint), no secrets; those stay in
+`.env`. `APP_NETWORK=mainnet` loads it on top of `.env`.
 
-> Si falta, el backend arranca con la configuración de **devnet** sin avisar: misma base, mismo
-> gacha. Compruébalo antes del primer despliegue.
+> If it's missing, the backend starts with the **devnet** configuration without warning: same
+> database, same gacha. Check it before the first deploy.
 
-> Usa una key de Helius **distinta** de la del frontend: esta es server-side de verdad (no
-> lleva prefijo `VITE_`, no viaja al navegador), así que puede tener más cupo.
+> Use a **different** Helius key from the frontend's: this one is truly server-side (no `VITE_`
+> prefix, it never reaches the browser), so it can have a higher quota.
 
-### 2.2 Arranca el servicio
+### 2.2 Start the service
 
 ```bash
 cp /srv/battlearena/deploy/systemd/battlearena-backend.service /etc/systemd/system/
@@ -181,65 +181,64 @@ systemctl daemon-reload
 systemctl enable --now battlearena-backend
 ```
 
-La base de datos `battlearena.mainnet.db` se crea sola al arrancar (`init_db`).
+The `battlearena.mainnet.db` database is created automatically on startup (`init_db`).
 
-### 2.3 Comprobación
+### 2.3 Check
 
 ```bash
 curl -s 127.0.0.1:9190/health                  # {"status":"ok"}
 ls -l /srv/battlearena/backend/battlearena.mainnet.db
-journalctl -u battlearena-backend -n 30        # sin tracebacks
+journalctl -u battlearena-backend -n 30        # no tracebacks
 ```
 
-### 2.4 Antes de aceptar dinero real
+### 2.4 Before accepting real money
 
-- **Fondea el wallet del operador** (`PRIVY_OPERATOR_ADDRESS`) con SOL en mainnet: paga el gas y
-  la renta de las cuentas de escrow. Sin fondos, las Pack Battle y las Royale se anulan al
-  llenarse el lobby.
-- **En el dashboard de Privy**, añade `https://battlearena.tld` a los dominios permitidos y deja
-  activados los *identity tokens* (User management → Authentication → Advanced), que es lo que
-  usa el chat.
+- **Fund the operator wallet** (`PRIVY_OPERATOR_ADDRESS`) with mainnet SOL: it pays gas and the rent
+  of the escrow accounts. Without funds, Pack Battles and Royales are voided when the lobby fills up.
+- **In the Privy dashboard**, add `https://battlearena.tld` to the allowed domains and keep
+  *identity tokens* enabled (User management → Authentication → Advanced), which is what the chat
+  uses.
 
 ---
 
-# Paso 3 — Frontend (build estático)
+# Step 3: Frontend (static build)
 
-No es un proceso: se compila y Caddy sirve el resultado.
+It isn't a process: it's built and Caddy serves the output.
 
-### 3.1 Variables de entorno
+### 3.1 Environment variables
 
-Vite carga `.env` y encima `.env.mainnet` (por `--mode mainnet`). Ambos van en la raíz
-`/srv/battlearena/`, a mano, gitignored.
+Vite loads `.env` and then `.env.mainnet` on top (via `--mode mainnet`). Both go in the root
+`/srv/battlearena/`, by hand, gitignored.
 
-En `.env.mainnet`, lo que cambia respecto a tu máquina:
+In `.env.mainnet`, what changes compared to your machine:
 
 ```ini
-VITE_BACKEND_URL=https://battlearena.tld     # NO localhost: mismo origen
-VITE_ORACLE_URL=https://battlearena.tld      # /attest y /pubkey los proxya Caddy
+VITE_BACKEND_URL=https://battlearena.tld     # NOT localhost: same origin
+VITE_ORACLE_URL=https://battlearena.tld      # Caddy proxies /attest and /pubkey
 ```
 
-En `.env`, `VITE_ORACLE_PUBKEY` **debe ser el pubkey que imprimió el paso 1.3**.
+In `.env`, `VITE_ORACLE_PUBKEY` **must be the pubkey printed in step 1.3**.
 
-> ⚠️ Todo lo que empiece por `VITE_` acaba en el bundle del navegador. La key de Helius del
-> frontend es pública de facto: restríngela por dominio en el panel de Helius.
+> ⚠️ Everything starting with `VITE_` ends up in the browser bundle. The frontend's Helius key is
+> effectively public: restrict it by domain in the Helius dashboard.
 
-### 3.2 Compila
+### 3.2 Build
 
 ```bash
 sudo -u battlearena -H npm --prefix /srv/battlearena ci
 cd /srv/battlearena && sudo -u battlearena -H npm run build -- --mode mainnet
 ```
 
-### 3.3 Comprobación
+### 3.3 Check
 
 ```bash
 ls /srv/battlearena/dist/index.html
-grep -o 'battlearena.tld' /srv/battlearena/dist/assets/*.js | head -1   # el dominio quedó dentro
+grep -o 'battlearena.tld' /srv/battlearena/dist/assets/*.js | head -1   # the domain got baked in
 ```
 
 ---
 
-# Paso 4 — Caddy (une los tres)
+# Step 4: Caddy (ties the three together)
 
 ```bash
 apt install -y debian-keyring debian-archive-keyring apt-transport-https
@@ -250,69 +249,69 @@ curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
 apt update && apt install -y caddy
 
 cp /srv/battlearena/deploy/Caddyfile /etc/caddy/Caddyfile
-# edita el dominio y el email de Let's Encrypt
-caddy validate --config /etc/caddy/Caddyfile     # SIEMPRE antes de recargar
+# edit the domain and the Let's Encrypt email
+caddy validate --config /etc/caddy/Caddyfile     # ALWAYS before reloading
 systemctl reload caddy
 ```
 
-### Comprobación (desde tu máquina, no desde el servidor)
+### Check (from your machine, not the server)
 
 ```bash
 curl -s https://battlearena.tld/health                    # {"status":"ok"}   → backend
-curl -s https://battlearena.tld/pubkey                    # {"oracle_pubkey"} → oráculo
+curl -s https://battlearena.tld/pubkey                    # {"oracle_pubkey"} → oracle
 curl -s -o /dev/null -w '%{http_code}\n' https://battlearena.tld/    # 200    → SPA
-curl -s -H 'Accept: text/html' https://battlearena.tld/leaderboard | head -c 40   # HTML, no JSON
+curl -s -H 'Accept: text/html' https://battlearena.tld/leaderboard | head -c 40   # HTML, not JSON
 ```
 
-Ese último es el que valida el truco del `Accept`: navegar a `/leaderboard` debe servir la app,
-y un `fetch` desde la app debe llegar al backend.
+That last one validates the `Accept` trick: navigating to `/leaderboard` must serve the app, and a
+`fetch` from the app must reach the backend.
 
 ---
 
-# Paso 5 — Backups y avisos
+# Step 5: Backups and alerts
 
 ```bash
 chmod +x /srv/battlearena/deploy/{deploy,backup}.sh
-rclone config          # crea el remoto (Backblaze B2 ≈ 1 $/mes, 10 GB gratis)
+rclone config          # create the remote (Backblaze B2 ≈ $1/month, 10 GB free)
 
 crontab -e
 #   0 * * * * RCLONE_REMOTE=b2:battlearena-backups /srv/battlearena/deploy/backup.sh >> /var/log/battlearena-backup.log 2>&1
 ```
 
-Comprobación: ejecuta `RCLONE_REMOTE=b2:battlearena-backups /srv/battlearena/deploy/backup.sh`
-a mano una vez y confirma que aparece el `.db.gz` en el bucket.
+Check: run `RCLONE_REMOTE=b2:battlearena-backups /srv/battlearena/deploy/backup.sh` by hand once and
+confirm the `.db.gz` shows up in the bucket.
 
-Monitorización externa contra `https://battlearena.tld/health` (healthchecks.io o UptimeRobot):
-si el servidor se cae, te tienes que enterar tú antes que tus jugadores.
-
----
-
-# Paso 6 — Prueba end-to-end antes de abrir
-
-1. Entra con Privy desde el móvil (no solo desde tu portátil).
-2. Abre el chat: tiene que conectar por `wss://` sin errores de contenido mixto en la consola.
-3. Abre una carta del pool → el modal pide `/attest` al oráculo. Si sale error de atestación, el
-   `VITE_ORACLE_PUBKEY` no cuadra con el paso 1.3.
-4. Haz una tirada de gacha pequeña con dinero real y comprueba que el NFT llega a la wallet.
-5. Solo entonces, abre las batallas.
+External monitoring against `https://battlearena.tld/health` (healthchecks.io or UptimeRobot): if the
+server goes down, you need to find out before your players do.
 
 ---
 
-# Día a día
+# Step 6: End-to-end test before opening up
+
+1. Log in with Privy from a phone (not just your laptop).
+2. Open the chat: it has to connect over `wss://` with no mixed-content errors in the console.
+3. Open a card from the pool → the modal requests `/attest` from the oracle. If you get an attestation
+   error, `VITE_ORACLE_PUBKEY` doesn't match step 1.3.
+4. Make a small gacha pull with real money and check the NFT reaches the wallet.
+5. Only then, open up battles.
+
+---
+
+# Day to day
 
 ```bash
-sudo /srv/battlearena/deploy/deploy.sh          # desplegar master (backup → pull → build → restart → healthcheck)
-journalctl -u battlearena-backend -f            # logs del backend
-journalctl -u battlearena-oracle -f             # logs del oráculo
-systemctl restart battlearena-backend           # reinicio manual
+sudo /srv/battlearena/deploy/deploy.sh          # deploy master (backup → pull → build → restart → healthcheck)
+journalctl -u battlearena-backend -f            # backend logs
+journalctl -u battlearena-oracle -f             # oracle logs
+systemctl restart battlearena-backend           # manual restart
 ```
 
-Al arrancar, el backend ejecuta `_resume_orphaned_battles`: termina o anula+reembolsa las
-batallas que quedaron en `running`, y barre las `voided` con reconciliación pendiente. Un
-reinicio no rompe la contabilidad, pero **evita reiniciar con batallas en vuelo** — mira
-`/pack-battles` antes de desplegar.
+On startup, the backend runs `_resume_orphaned_battles`: it finishes, or voids and refunds, the
+battles left `running`, and sweeps the `voided` ones with pending reconciliation. A restart doesn't
+break the accounting, but **avoid restarting with battles in progress**: check `/pack-battles` before
+deploying.
 
-# Si un día necesitas escalar
+# If you ever need to scale
 
-No añadas réplicas: el código asume un proceso. El orden correcto es (1) Postgres + Alembic,
-(2) rate-limits y el `_buyin_lock` a Redis, (3) entonces sí, varias instancias o un PaaS.
+Don't add replicas: the code assumes a single process. The right order is (1) Postgres + Alembic,
+(2) rate limits and the `_buyin_lock` to Redis, (3) only then, multiple instances or a PaaS.

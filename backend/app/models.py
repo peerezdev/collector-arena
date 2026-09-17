@@ -441,3 +441,20 @@ class TrackerPass(Base):
     #: wallet vuelve a preguntar sola antes de rendirse (ver `gacha_tracker_pass` en app/main.py).
     tx_signature: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class AirdropClaim(Base):
+    """Constancia de un claim de airdrop hecho desde la app.
+
+    No manda sobre nada: la elegibilidad la decide el fichero de asignaciones y si está
+    reclamado lo decide la cadena, porque el jugador puede haber reclamado en la web de
+    CC sin pasar por aquí. Esta fila existe para poder reenseñarle la firma cuando
+    vuelva y para saber cuánto SOL nos ha costado la operación.
+    """
+    __tablename__ = "airdrop_claims"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    wallet: Mapped[str] = mapped_column(String, index=True)
+    ronda: Mapped[str] = mapped_column(String, index=True)
+    amount: Mapped[int] = mapped_column(Integer)          # unidades base de CARDS (6 decimales)
+    signature: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

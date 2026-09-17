@@ -1,38 +1,52 @@
-# Battle Arena — Modo on-chain (devnet)
+# Collector Arena: on-chain mode (devnet)
 
-Guía para correr y verificar el modo **On-chain (devnet)** del frontend: conectar wallet (Reown AppKit / WalletConnect), ver la colección con valores del oráculo, crear/unirse a partidas en el lobby y jugar una batalla real (commit-reveal + settlement) contra el programa Anchor en devnet.
+> **Historical note.** This guide documents the earlier on-chain mode, built around the Anchor
+> program in `onchain/` and its pricing oracle. That program is **built but not deployed to
+> mainnet**. The product live on mainnet today runs through the backend, Privy embedded wallets and
+> Collector Crypt's APIs, as described in the [README](../README.md).
 
-El modo **Práctica (offline)** (motor mock de la Fase 0) sigue disponible sin wallet, para jugar y validar diversión.
+A guide to running and verifying the frontend's **On-chain (devnet)** mode: connect a wallet (Reown
+AppKit / WalletConnect), view the collection with oracle values, create and join games in the lobby,
+and play a real battle (commit-reveal + settlement) against the Anchor program on devnet.
 
-> **Estado:** el SDK on-chain está testeado (PDAs, instrucción Ed25519 anclada al vector compartido, builders, clientes). La capa React compila y queda lista, pero el **flujo real wallet+devnet lo verificas tú** con el checklist de abajo — no se puede automatizar la firma del navegador. De paso, este recorrido valida los esqueletos pendientes (lector de cadena del backend, resolver real de Collector Crypt).
+The **Practice (offline)** mode (the Phase 0 mock engine) remains available without a wallet, to play
+and validate fun.
 
-## Arquitectura del frontend on-chain
+> **Status:** the on-chain SDK is tested (PDAs, the Ed25519 instruction pinned to the shared test
+> vector, builders, clients). The React layer compiles and is ready, but **you verify the real
+> wallet + devnet flow** with the checklist below: browser signing can't be automated. Along the way,
+> this walkthrough validates the pending skeletons (the backend chain reader and the real Collector
+> Crypt resolver).
+
+## On-chain frontend architecture
 
 ```
-src/onchain/   SDK puro (testeado): pdas, attestation (Ed25519), instructions, oracle/backend clients, config, types
-src/wallet/    Reown AppKit (Solana devnet) + hook useWallet (publicKey, connect, signAndSendTransaction, signMessage)
+src/onchain/   Pure SDK (tested): pdas, attestation (Ed25519), instructions, oracle/backend clients, config, types
+src/wallet/    Reown AppKit (Solana devnet) + useWallet hook (publicKey, connect, signAndSendTransaction, signMessage)
 src/ui/screens/onchain/   ConnectScreen, CollectionScreen, LobbyScreen, OnchainBattleScreen
-src/mode/ModeSelect.tsx    Práctica (offline) | On-chain (devnet)
+src/mode/ModeSelect.tsx    Practice (offline) | On-chain (devnet)
 ```
 
-Las transacciones se firman/envían **desde el cliente** (el RPC de devnet acepta `sendTransaction`). En mainnet se migraría a broadcast server-side (como en MarketAgg) y se ataría la atestación a la batalla por nonce.
+Transactions are signed and sent **from the client** (the devnet RPC accepts `sendTransaction`). On
+mainnet this would move to server-side broadcast (as in MarketAgg), and the attestation would be bound
+to the battle by nonce.
 
-## Variables de entorno (`.env`)
+## Environment variables (`.env`)
 
 ```
 VITE_SOLANA_RPC=https://api.devnet.solana.com
 VITE_PROGRAM_ID=89qGDjXGcV9zi3968DtRLNzBn5KXhYmSGJkjKntksCdk
 VITE_ORACLE_URL=http://localhost:8787
-VITE_BACKEND_URL=http://localhost:5173   # mismo origen; lo enruta el proxy de Vite
-VITE_REOWN_PROJECT_ID=<tu project id de Reown/WalletConnect Cloud>
-VITE_STAKE_MINT=<mint SPL de la apuesta; en devnet, un USDC de test que controles>
-VITE_TREASURY=<token account SPL del treasury para el rake>
+VITE_BACKEND_URL=http://localhost:5173   # same origin; routed by the Vite proxy
+VITE_REOWN_PROJECT_ID=<your Reown/WalletConnect Cloud project id>
+VITE_STAKE_MINT=<SPL mint for the stake; on devnet, a test USDC you control>
+VITE_TREASURY=<SPL token account of the treasury for the rake>
 ```
 
-## Arrancar los servicios
+## Starting the services
 
 ```bash
-# Oráculo (firma atestaciones de valor)
+# Oracle (signs value attestations)
 cd oracle && source .venv/bin/activate && PRICING_SOURCE=collectorcrypt uvicorn app.main:app --port 8787
 
 # Backend (ELO + lobby)
@@ -44,62 +58,81 @@ npm run dev   # http://localhost:5173
 
 ## Gacha (devnet)
 
-Flujo completo para adquirir cartas on-chain vía el módulo Gacha (máquinas de sorpresas):
+The full flow for acquiring cards on-chain through the Gacha module (surprise machines):
 
-1. **Conseguir `GACHA_API_KEY`:** solicitar en el Discord de Collector Crypt y guardar en `backend/.env`:
+1. **Get a `GACHA_API_KEY`:** request one on the Collector Crypt Discord and store it in
+   `backend/.env`:
    ```env
-   GACHA_API_KEY=<tu-key>
+   GACHA_API_KEY=<your-key>
    ```
-   Sin esta key, los endpoints `/gacha/*` responden `503 gacha_disabled`. La API del Gacha se consume a través del proxy del backend, **nunca exponen la `x-api-key` al navegador**.
+   Without this key, the `/gacha/*` endpoints respond `503 gacha_disabled`. The Gacha API is consumed
+   through the backend proxy, and **the `x-api-key` is never exposed to the browser**.
 
-2. **USDC devnet:** adquirir fondos de test desde el faucet:
+2. **Devnet USDC:** get test funds from the faucet:
    - URL: https://spl-token-faucet.com/?token-name=USDC-Dev
    - Mint (USDC-Dev): `Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG9Vp2KGtKJr`
-   - Cantidad mínima para gacha: 50 USDC por pack.
+   - Minimum for gacha: 50 USDC per pack.
 
-3. **Interacción en la app:**
-   - App → modo **On-chain (devnet)** → conectar wallet → ir a **Colección**.
-   - Botón **«🎰 Gacha»** → elegir máquina tragaperras.
-   - **«Abrir pack»** (50 USDC) → firma en la wallet → reveal cinemático de la carta.
+3. **In the app:**
+   - App → **On-chain (devnet)** mode → connect wallet → go to **Collection**.
+   - **«🎰 Gacha»** button → pick a machine.
+   - **«Open pack»** (50 USDC) → sign in the wallet → cinematic card reveal.
 
-4. **Usar la carta en batalla:**
-   - Botón **«Crear desafío con esta carta»** → la carta nueva aparece en tu Colección.
-   - Atestación del oráculo: OK (el oráculo valida automáticamente la nueva carta).
-   - Crear batalla y jugarla normalmente (vs otro jugador).
+4. **Use the card in battle:**
+   - **«Create challenge with this card»** button → the new card appears in your Collection.
+   - Oracle attestation: OK (the oracle validates the new card automatically).
+   - Create a battle and play it normally (against another player).
 
-> **Nota arquitectónica:** el navegador nunca ve la `x-api-key`. Las transacciones on-chain (pago USDC, mint NFT) se firman en la wallet; el revelado de la carta es off-chain (JSON).
+> **Architecture note:** the browser never sees the `x-api-key`. On-chain transactions (USDC payment,
+> NFT mint) are signed in the wallet; the card reveal is off-chain (JSON).
 
-## Checklist de verificación en devnet (lo haces tú)
+## Devnet verification checklist (you run it)
 
-1. **Toolchain + fondos:**
+1. **Toolchain + funds:**
    ```bash
    export PATH="$HOME/.cargo/bin:$HOME/.local/share/solana/install/active_release/bin:$PATH"
    solana config set --url devnet
-   solana airdrop 2          # SOL de devnet para desplegar/firmar
+   solana airdrop 2          # devnet SOL to deploy and sign
    ```
-2. **Desplegar el programa a devnet:**
+2. **Deploy the program to devnet:**
    ```bash
    cd onchain && anchor build && anchor deploy --provider.cluster devnet
-   # confirma que el program id desplegado == VITE_PROGRAM_ID (89qGDjX…ksCdk).
-   # si difiere, anchor keys sync + redeploy, y actualiza VITE_PROGRAM_ID.
+   # check that the deployed program id == VITE_PROGRAM_ID (89qGDjX…ksCdk).
+   # if it differs, anchor keys sync + redeploy, and update VITE_PROGRAM_ID.
    ```
-3. **Oráculo:** `GET http://localhost:8787/pubkey` → anota el `oracle_pubkey`. Es el que se pasa como `oracle` al crear la batalla (el contrato verifica la firma contra él).
-4. **Mint de apuesta de test:** crea un mint SPL en devnet (o usa un USDC de test que controles), mintea saldo a tus dos wallets de prueba, y pon su dirección en `VITE_STAKE_MINT`. Crea el token account del treasury y ponlo en `VITE_TREASURY`.
-5. **NFTs:** ten al menos una carta de Collector Crypt (o un mint de test) en cada wallet cuyo `mint` el oráculo pueda valorar (con `insuredValue`). Si el oráculo corre en `mock`, cualquier mint devuelve valor; en `collectorcrypt`, debe ser un NFT real con `insuredValue`.
-6. **Jugar (2 wallets):**
-   - Wallet A: `npm run dev` → **On-chain (devnet)** → conectar Phantom → autenticar → Colección: pega el mint y "Valorar" → Lobby → **Crear** (apuesta + límites de ELO opcionales) → firma `initialize_battle`.
-   - Wallet B: conectar → Lobby → la partida aparece con tu **diferencia de ELO** y `joinable` → **Unirse** → firma `join_battle`.
-   - Ambos: por ronda, repartir energía → **Commit** (firma) → **Reveal** (firma) → **Resolver** (cualquiera). Al decidirse, **Settle** paga al ganador.
-   - Confirma el ELO actualizado: `GET http://localhost:9090/elo/compare?a=<A>&b=<B>`.
+3. **Oracle:** `GET http://localhost:8787/pubkey` → note the `oracle_pubkey`. It's passed as `oracle`
+   when creating the battle (the contract verifies the signature against it).
+4. **Test stake mint:** create an SPL mint on devnet (or use a test USDC you control), mint balance to
+   your two test wallets, and put its address in `VITE_STAKE_MINT`. Create the treasury token account
+   and put it in `VITE_TREASURY`.
+5. **NFTs:** have at least one Collector Crypt card (or a test mint) in each wallet whose `mint` the
+   oracle can value (with `insuredValue`). If the oracle runs in `mock`, any mint returns a value; in
+   `collectorcrypt`, it must be a real NFT with `insuredValue`.
+6. **Play (2 wallets):**
+   - Wallet A: `npm run dev` → **On-chain (devnet)** → connect Phantom → authenticate → Collection:
+     paste the mint and "Value" → Lobby → **Create** (stake + optional ELO limits) → sign
+     `initialize_battle`.
+   - Wallet B: connect → Lobby → the game appears with your **ELO difference** and `joinable` →
+     **Join** → sign `join_battle`.
+   - Both: each round, allocate energy → **Commit** (sign) → **Reveal** (sign) → **Resolve** (anyone).
+     Once decided, **Settle** pays the winner.
+   - Check the updated ELO: `GET http://localhost:9090/elo/compare?a=<A>&b=<B>`.
 
-## Qué queda por validar contra datos reales (al correr lo anterior)
+## What remains to validate against real data (when running the above)
 
-- **Lector de cadena del backend** (`SolanaChainSource`): hoy esqueletado; al correr devnet, implementar/validar la decodificación de la cuenta `Battle` para que `sync` derive el resultado real (o, mientras tanto, mantener el backend en `CHAIN_SOURCE=mock` sembrando estados).
-- **Resolver real de Collector Crypt** (oráculo): validar el mapeo de campos contra una respuesta real de la API con un mint real.
-- **API exacta de Reown AppKit** y el flujo de firma: confirmar conexión, `signMessage` (auth) y `signAndSendTransaction` con Phantom real.
+- **Backend chain reader** (`SolanaChainSource`): currently a skeleton; when running devnet,
+  implement and validate decoding of the `Battle` account so `sync` derives the real result (or, in the
+  meantime, keep the backend on `CHAIN_SOURCE=mock` seeding states).
+- **Real Collector Crypt resolver** (oracle): validate the field mapping against a real API response
+  with a real mint.
+- **Exact Reown AppKit API** and the signing flow: confirm connection, `signMessage` (auth) and
+  `signAndSendTransaction` with a real Phantom.
 
-## Antes de mainnet (recordatorio)
+## Before mainnet (reminder)
 
-- Broadcast de transacciones server-side (el RPC público de mainnet da 403 en `sendTransaction`).
-- ~~Atar la atestación del oráculo a la batalla para evitar reuso dentro de la ventana de frescura.~~ **RESUELTO**: el mensaje firmado incluye el battle PDA (81 bytes), el endpoint `/attest?battle=<pubkey>` es obligatorio, y el contrato verifica que el battle embebido en la firma corresponde al account de la instrucción.
-- Auditoría del contrato + verificación legal (ya anotado en los riesgos del programa y el oráculo).
+- Server-side transaction broadcast (the public mainnet RPC returns 403 on `sendTransaction`).
+- ~~Bind the oracle attestation to the battle to prevent reuse within the freshness window.~~
+  **RESOLVED**: the signed message includes the battle PDA (81 bytes), the `/attest?battle=<pubkey>`
+  endpoint is mandatory, and the contract checks that the battle embedded in the signature matches the
+  instruction's account.
+- Contract audit + legal review (already noted in the program and oracle risk sections).

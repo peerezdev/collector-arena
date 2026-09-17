@@ -5,23 +5,25 @@ import { config } from '../onchain/config'
 
 // ─── Hook ────────────────────────────────────────────────────────────────────
 //
-// On-chain USDC balance of the caller's embedded wallet.
+// On-chain token balance of the caller's embedded wallet, read through the backend rather
+// than directly from the RPC. The public mainnet RPC (api.mainnet-beta.solana.com) returns 403
+// to browser Origins, so a browser cannot query token balances there at all. The backend has no
+// Origin header and already holds the per-network rpc_url + mint, so it reads the balance
+// reliably — identical behavior on devnet and mainnet, and no RPC provider key exposed in the
+// client.
 //
-// Read through the backend (GET /users/me/usdc), NOT directly from the RPC. The public
-// mainnet RPC (api.mainnet-beta.solana.com) returns 403 to browser Origins, so a browser
-// cannot query token balances there at all. The backend has no Origin header and already
-// holds the per-network rpc_url + USDC mint, so it reads the balance reliably — identical
-// behavior on devnet and mainnet, and no RPC provider key exposed in the client.
+// Parameterised by endpoint + response field so USDC and CARDS (and any future SPL balance we
+// expose the same way) share one polling/freeze implementation instead of two copies.
 //
 // Se refresca cada 30s SOLO con la pestaña a la vista, y se refresca una vez al volver a ella.
 // El motivo está junto al código, abajo: cada consulta cuesta una llamada al RPC.
 
-export function useUsdcBalance(): { usdc: number | null; loading: boolean } {
+function useTokenBalance(endpoint: string, field: string, label: string): { balance: number | null; loading: boolean } {
   // Al soltar la congelación hay que repintar en cuanto se pueda: si no, el saldo real tardaría
   // hasta 30s en aparecer y el usuario vería un número que ya no es el suyo.
   const held = useBalanceHeld()
   const { identityToken } = useIdentityToken()
-  const [usdc, setUsdc] = useState<number | null>(null)
+  const [balance, setBalance] = useState<number | null>(null)
   const [loading, setLoading] = useState(false)
   const unmountedRef = useRef(false)
 
@@ -34,7 +36,7 @@ export function useUsdcBalance(): { usdc: number | null; loading: boolean } {
 
   useEffect(() => {
     if (!identityToken) {
-      setUsdc(null)
+      setBalance(null)
       setLoading(false)
       return
     }
@@ -44,24 +46,24 @@ export function useUsdcBalance(): { usdc: number | null; loading: boolean } {
 
     async function fetchBalance() {
       try {
-        const resp = await fetch(`${config.backendUrl}/users/me/usdc`, {
+        const resp = await fetch(`${config.backendUrl}${endpoint}`, {
           headers: {
             Authorization: `Bearer ${token}`,
             'ngrok-skip-browser-warning': 'true',
           },
         })
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-        const data = (await resp.json()) as { usdc?: number }
+        const data = (await resp.json()) as Record<string, unknown>
         if (!unmountedRef.current) {
           // Con una tirada sin revelar, el saldo se queda como estaba: el auto-buyback del turbo
           // lo sube en cuanto CC abre el sobre por dentro, y verlo subir destripa el resultado
           // antes del reveal. Se sigue consultando (así al soltar ya está fresco), pero no se pinta.
-          if (!isBalanceHeld()) setUsdc(typeof data.usdc === 'number' ? data.usdc : 0)
+          if (!isBalanceHeld()) setBalance(typeof data[field] === 'number' ? (data[field] as number) : 0)
           setLoading(false)
         }
       } catch (err) {
         if (import.meta.env.DEV) {
-          console.warn('[useUsdcBalance] balance error:', err)
+          console.warn(`[${label}] balance error:`, err)
         }
         if (!unmountedRef.current) {
           setLoading(false)
@@ -107,7 +109,21 @@ export function useUsdcBalance(): { usdc: number | null; loading: boolean } {
       stopPolling()
       document.removeEventListener('visibilitychange', onVisibilityChange)
     }
-  }, [identityToken, held])
+  }, [identityToken, held, endpoint, field, label])
 
-  return { usdc, loading }
+  return { balance, loading }
+}
+
+export function useUsdcBalance(): { usdc: number | null; loading: boolean } {
+  const { balance, loading } = useTokenBalance('/users/me/usdc', 'usdc', 'useUsdcBalance')
+  return { usdc: balance, loading }
+}
+
+// Saldo on-chain de $CARDS (airdrop de Collector Crypt) de la wallet embebida, mismo mecanismo
+// que useUsdcBalance pero contra /users/me/cards. Devuelve null tanto sin sesión como si el
+// backend responde 503 (mint sin configurar) — el consumidor no distingue ambos casos, igual
+// que useUsdcBalance no distingue "sin sesión" de "error de red".
+export function useCardsBalance(): { cards: number | null; loading: boolean } {
+  const { balance, loading } = useTokenBalance('/users/me/cards', 'cards', 'useCardsBalance')
+  return { cards: balance, loading }
 }

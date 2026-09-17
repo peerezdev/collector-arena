@@ -7,12 +7,13 @@ import math
 import time as _time
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Literal, Optional
 from fastapi import FastAPI, Depends, Header, HTTPException, Path, Request, Query, WebSocket, WebSocketDisconnect
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -38,7 +39,8 @@ from .services.ev_view import fila_ev
 from .services.tier_gaps import rachas_por_tier
 from .services.privy_signer import PrivySigner, PrivyNoVerificable
 from .services import escrow_pool, machine_visibility
-from .models import GachaPack, PackBattle, BattlePlayer, BattlePack, BattlePull, Tip, User, TrackerPass
+from .models import (GachaPack, PackBattle, BattlePlayer, BattlePack, BattlePull, Tip, User,
+                     TrackerPass, AirdropClaim)
 from .chat import (ConnectionManager, ChatBuffer, abbreviate, save_chat_message,
                    recent_chat_messages, big_hit_multiple)
 from .services.pack_lobby import (
@@ -53,17 +55,31 @@ from .services.pack_orchestration import (
     reconcile_voided_battle_live,
 )
 from .services.solana_tx import build_memo_tx, build_free_pack_proof_tx, confirmar_firma, leer_firma
-from solders.pubkey import Pubkey
 from .services.royale_funding import (royale_buyin, collect_buyin, construir_y_firmar_cobro,
                                       enviar_cobro, distribute_usdc, refund_buyin, withdraw_usdc,
                                       withdraw_usdc_with_fee)
-from .services.nft_transfer import submit_signed_tx, build_transfer, nft_in_owner, UnsupportedNftStandard
+from .services.nft_transfer import (submit_signed_tx, build_transfer, nft_in_owner,
+                                    UnsupportedNftStandard, leer_cuenta)
+from .services.cards_airdrop import ata, build_claim_tx, cargar_asignaciones, claim_status_pda
+from solders.pubkey import Pubkey
 from .services.reservations import (reserve, reserved_total, royale_locked_total,
                                      release_reservations, battle_in_progress, royale_in_progress)
 from .services import emotes as emote_service
 from .services.bots import load_bots, pick_bot
 
 logger = logging.getLogger(__name__)
+
+
+async def _airdrop_cuenta(rpc_url: str, pubkey: str):
+    """¿Existe esta cuenta en la cadena? Devuelve la cuenta o None.
+
+    Vive AQUÍ y no dentro de `create_app` a propósito: un closure no se puede sustituir
+    desde un test, y esta es la única llamada a la red de todo el airdrop. A nivel de
+    módulo, `monkeypatch.setattr("app.main._airdrop_cuenta", ...)` funciona porque
+    Python resuelve el global en el momento de la llamada.
+    """
+    return await leer_cuenta(rpc_url, pubkey)
+
 
 # Tope de menciones por mensaje. Con la lista de conectados en la mano, sin tope bastaría un
 # mensaje para avisar a toda la sala: un `@todos` que nadie ha decidido ofrecer.
@@ -126,7 +142,10 @@ class WithdrawAddressBody(BaseModel):
 
 class WithdrawBody(BaseModel):
     address: str = Field(pattern=r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")  # destination Solana wallet
-    amount: float = Field(gt=0)  # USDC (dollars)
+    amount: float = Field(gt=0)  # USDC (dollars), o CARDS si token="cards"
+    # Qué token retirar. Literal ya deja que FastAPI/Pydantic devuelvan 422 solos ante
+    # cualquier otro valor, sin necesidad de comprobarlo a mano en el endpoint.
+    token: Literal["usdc", "cards"] = "usdc"
 
 
 class TipBody(BaseModel):
@@ -252,9 +271,15 @@ def create_app(session_factory, chain: ChainSource,
                cc_usdc_mint: str = "",
                privy_operator_wallet_id: str = "",
                privy_operator_address: str = "",
+               cards_airdrop: dict | None = None,
+               cards_airdrop_distributor: str = "",
+               cards_airdrop_vault: str = "",
+               cards_airdrop_mint: str = "",
+               cards_airdrop_round: str = "",
                escrow_seed_lamports: int = 10_000_000,
                dev_endpoints_enabled: bool = False,
                min_withdraw_usdc: float = 1.0,
+               min_withdraw_cards: float = 1.0,
                tips_enabled: bool = False,
                min_tip_usdc: float = 1.0,
                tip_rate_limit: int = 10,
@@ -371,6 +396,18 @@ def create_app(session_factory, chain: ChainSource,
         # by /users/me/balance and subtracted client-side, matching the previous behavior.
         base_units = await usdc_balance_base_units(solana_rpc_url, wallet, cc_usdc_mint)
         return {"base_units": base_units, "usdc": base_units / 1e6}
+
+    @app.get("/users/me/cards")
+    async def me_cards(wallet: str = Depends(current_user)):
+        # Igual que /users/me/usdc y por la misma razón (el browser no puede leer el RPC de
+        # mainnet directamente: el endpoint público devuelve 403 a los Origins de navegador, y
+        # apuntar el cliente a la red equivocada no devuelve nada). Aquí se lee el mint del
+        # airdrop $CARDS en vez del de USDC; usdc_balance_base_units ya toma el mint como
+        # parámetro, así que sirve tal cual (ver services/pack_orchestration.py).
+        if not cards_airdrop_mint:
+            raise HTTPException(503, "cards_unavailable")
+        base_units = await usdc_balance_base_units(solana_rpc_url, wallet, cards_airdrop_mint)
+        return {"base_units": base_units, "cards": base_units / 1e6}
 
     @app.get("/users/search")
     def users_search(q: str = "", limit: int = 8, wallet: str = Depends(current_user),
@@ -821,6 +858,52 @@ def create_app(session_factory, chain: ChainSource,
         except GachaUpstreamError as e:
             raise HTTPException(502, str(e) or "gacha upstream unavailable")
 
+    _airdrop = cards_airdrop or {}
+
+    def _airdrop_o_503() -> None:
+        """Apagado y averiado se responden igual, con 503, y por la misma razón: en
+        ninguno de los dos casos sabemos si el jugador es elegible."""
+        if not (_airdrop and cards_airdrop_distributor and cards_airdrop_vault
+                and cards_airdrop_mint and cards_airdrop_round):
+            raise HTTPException(503, "airdrop_unavailable")
+        if not (privy_operator_wallet_id and privy_operator_address):
+            raise HTTPException(503, "airdrop_unavailable")
+        if privy_signer is None:
+            raise HTTPException(503, "airdrop_unavailable")
+
+    async def _ya_reclamado(index: int) -> bool:
+        try:
+            pda, _ = claim_status_pda(index, cards_airdrop_distributor)
+        except ValueError as exc:
+            # Un typo en CARDS_AIRDROP_DISTRIBUTOR: problema de configuración, no del
+            # jugador ni de la cadena, así que 503 y no el 500 que se llevaba antes.
+            logger.error("airdrop: pubkey de configuración inválida (distributor): %s", exc)
+            raise HTTPException(503, "airdrop_unavailable")
+        try:
+            return await _airdrop_cuenta(solana_rpc_url, str(pda)) is not None
+        except Exception:
+            # Reintentable a propósito. Si el RPC no contesta no sabemos si reclamó, y
+            # contestar "no" haría que le saliera el botón para reclamar dos veces. El
+            # cuerpo del 502 no lleva la excepción cruda: en mainnet `solana_rpc_url`
+            # lleva un ?api-key= del proveedor, y volcarla en la respuesta se la mandaría
+            # al navegador del jugador. Este es el camino que se dispara en CADA carga de
+            # /claim, así que es el más probable de todos de llegar a disparar esto de verdad.
+            logger.exception("airdrop: check de ya-reclamado falló para index=%s", index)
+            raise HTTPException(502, "airdrop check failed")
+
+    @app.get("/users/me/airdrop/cards")
+    async def me_airdrop_cards(wallet: str = Depends(current_user), s: Session = Depends(db)):
+        _airdrop_o_503()
+        e = _airdrop.get(wallet)
+        if e is None:
+            return {"eligible": False, "amount": 0, "claimed": False, "signature": None}
+        reclamado = await _ya_reclamado(int(e["i"]))
+        fila = s.query(AirdropClaim).filter(
+            AirdropClaim.wallet == wallet, AirdropClaim.ronda == cards_airdrop_round
+        ).first()
+        return {"eligible": True, "amount": int(e["a"]), "claimed": reclamado,
+                "signature": fila.signature if fila else None}
+
     @app.post("/gacha/submit-tx")
     async def gacha_submit(body: SubmitTxBody, wallet: str = Depends(current_user),
                            s: Session = Depends(db)):
@@ -958,8 +1041,19 @@ def create_app(session_factory, chain: ChainSource,
         if authorization and authorization.startswith("Bearer ") and privy is not None:
             try:
                 return privy.embedded_solana_wallet(authorization[len("Bearer "):])
-            except PrivyAuthError:
+            except PrivyAuthError as e:
+                # El token caducado se trata como "sin sesión", pero SE ANOTA. Sin esta línea, "no
+                # manda token" y "manda uno que no verifica" producen la misma pantalla —"llevas 0
+                # USDC apostados"— y desde el servidor no hay forma de distinguirlas. Pasó: un
+                # jugador con 525 USDC apostados veía 0 y hubo que descartar a mano el cálculo, la
+                # ventana y la base antes de mirar aquí. El motivo va al log, no a la respuesta.
+                logger.warning("wallet opcional: token presente pero rechazado (%s): %s",
+                               type(e).__name__, e)
                 return None
+        elif authorization:
+            # Cabecera que no es un Bearer: casi siempre un cliente mal montado, y en silencio se
+            # ve igual que no haber entrado.
+            logger.warning("wallet opcional: Authorization presente pero no es 'Bearer …'")
         return None
 
     def _exigir_tracker(authorization: Optional[str], s: Session) -> None:
@@ -1023,27 +1117,41 @@ def create_app(session_factory, chain: ChainSource,
             # Sin nada medido no hay respaldo, y una lista vacía se leería como "esta máquina no
             # tiene datos" en vez de "no se ha podido preguntar".
             raise HTTPException(502, str(e) or "gacha upstream unavailable")
-        filas = []
-        with session_factory() as s:
-            # Solo las que se pueden jugar AHORA. Se descartan por dos motivos distintos y los dos
-            # cuentan: las que hemos apagado nosotros (`machine_visibility`, el mismo filtro que el
-            # catálogo) y las que Collector Crypt tiene cerradas (`available`). Medir el EV de una
-            # máquina a la que nadie puede tirar es peor que no medirlo: ocupa sitio y sugiere una
-            # decisión que no se puede tomar.
-            #
-            # Se filtra al PUBLICAR y no al ingerir: sus tiradas se siguen guardando, así que si
-            # vuelve a abrirse no arranca desde cero.
-            for m in machine_visibility.visible(s, maquinas):
-                code = m.get("code")
-                if not code or not m.get("price"):
-                    continue
-                if m.get("available") is False:
-                    continue
-                f = fila_ev(s, code, precio=float(m["price"]),
-                            buyback_pct=(m.get("instantBuyback") or 0) / 100.0 or None,
-                            horas=hours)
-                f["name"] = m.get("name") or code
-                filas.append(f)
+        def _calcular_filas() -> list:
+            filas = []
+            with session_factory() as s:
+                # Solo las que se pueden jugar AHORA. Se descartan por dos motivos distintos y los dos
+                # cuentan: las que hemos apagado nosotros (`machine_visibility`, el mismo filtro que el
+                # catálogo) y las que Collector Crypt tiene cerradas (`available`). Medir el EV de una
+                # máquina a la que nadie puede tirar es peor que no medirlo: ocupa sitio y sugiere una
+                # decisión que no se puede tomar.
+                #
+                # Se filtra al PUBLICAR y no al ingerir: sus tiradas se siguen guardando, así que si
+                # vuelve a abrirse no arranca desde cero.
+                for m in machine_visibility.visible(s, maquinas):
+                    code = m.get("code")
+                    if not code or not m.get("price"):
+                        continue
+                    if m.get("available") is False:
+                        continue
+                    f = fila_ev(s, code, precio=float(m["price"]),
+                                buyback_pct=(m.get("instantBuyback") or 0) / 100.0 or None,
+                                horas=hours)
+                    f["name"] = m.get("name") or code
+                    filas.append(f)
+            return filas
+
+        # FUERA DEL BUCLE DE EVENTOS, y no por elegancia. `fila_ev` hace 4.000 remuestreos por
+        # máquina: medido sobre pokemon_50 con sus 16.000 tiradas de 48 h, 1.000 remuestreos cuestan
+        # 27 s, o sea ~108 s los 4.000 — de UNA máquina. El backend corre en UN proceso, así que
+        # ejecutar eso aquí dentro deja al resto del mundo sin backend durante ese rato: ni saldo,
+        # ni máquinas, ni chat, ni liquidar una batalla en curso. Es el mismo cuelgue del 11/08,
+        # solo que aquel fue una ráfaga accidental y este vendría cada vez que caduque la caché.
+        #
+        # `run_in_threadpool` lo aparta a un hilo: sigue costando lo mismo, pero lo paga quien pidió
+        # la página y no todos los demás. El trabajo de base va dentro del hilo a propósito — la
+        # sesión se abre y se cierra ahí, sin cruzar la frontera.
+        filas = await run_in_threadpool(_calcular_filas)
         filas.sort(key=lambda f: (f["realized_edge_pct"] is None, -(f["realized_edge_pct"] or 0)))
         if hours == 48:
             _ev_cache.update(t=ahora, filas=filas)
@@ -1100,9 +1208,15 @@ def create_app(session_factory, chain: ChainSource,
         ahora = _time.time()
         if _ev_vivo_cache["filas"] and ahora - _ev_vivo_cache["t"] < _EV_VIVO_TTL:
             return {"rows": _ev_vivo_cache["filas"], "updated_at": int(_ev_vivo_cache["t"])}
-        with session_factory() as s:
-            filas = [{"machine": code, "tiers": rachas_por_tier(s, code)}
-                     for code in winners_store.maquinas_con_datos(s)]
+        def _rachas() -> list:
+            with session_factory() as s:
+                return [{"machine": code, "tiers": rachas_por_tier(s, code)}
+                        for code in winners_store.maquinas_con_datos(s)]
+
+        # También a un hilo, aunque aquí sea una consulta por máquina y no 4.000 remuestreos: son
+        # tantas consultas como máquinas con datos, la página lo pide cada pocos segundos, y el
+        # backend es un solo proceso. Lo barato repetido a menudo también bloquea.
+        filas = await run_in_threadpool(_rachas)
         _ev_vivo_cache.update(t=ahora, filas=filas)
         return {"rows": filas, "updated_at": int(ahora)}
 
@@ -1948,12 +2062,55 @@ def create_app(session_factory, chain: ChainSource,
             s.commit()
         return {"memo": out["memo"], "remaining_points": out.get("remaining_points")}
 
+    async def _withdraw_cards(body: WithdrawBody, wallet: str, wallet_id: str) -> dict:
+        """Retiro de CARDS (airdrop de Collector Crypt), rama deliberadamente distinta a la de
+        USDC — ver el detalle de cada diferencia en los comentarios de abajo."""
+        # Sin mint configurado no hay nada que mover. Mismo criterio que en los endpoints del
+        # claim: no configurado es "todavía no", no "no" — de ahí 503 y no un 404/422.
+        if not cards_airdrop_mint:
+            raise HTTPException(503, "withdrawals_unavailable")
+        amount = int(round(body.amount * 1_000_000))   # CARDS también son 6 decimales, como USDC
+        if amount <= 0:
+            raise HTTPException(422, "amount must be > 0")
+        # Mínimo PROPIO (min_withdraw_cards): el operador paga la renta de la ATA destino igual
+        # que en USDC, así que el mismo ataque de dust a direcciones nuevas aplica igual.
+        min_base = int(round(min_withdraw_cards * 1_000_000))
+        if amount < min_base:
+            raise HTTPException(422, f"the minimum withdrawal is {min_withdraw_cards} CARDS")
+        _withdraw_throttle(wallet)  # el operador sigue pagando la renta de ATA aquí también
+        # Sin bloqueo por partida en curso: CARDS no se apuesta en ninguna batalla (a diferencia
+        # de USDC, que sí es lo que se juega), así que una partida abierta no le da destino a
+        # este saldo y bloquearlo castigaría al jugador sin motivo que aplique a este token.
+        # Sin resta de reservado: `reserved_total` cuenta holds de pack battle, que son en USDC.
+        # El saldo disponible de CARDS es directamente el saldo on-chain, sin resta ninguna.
+        bal = await usdc_balance_base_units(solana_rpc_url, wallet, cards_airdrop_mint)
+        if bal < amount:
+            raise HTTPException(402, "not enough available CARDS")
+        blockhash = await fetch_latest_blockhash(solana_rpc_url)
+        # Sin comisión de plataforma: el fee del withdraw grava dinero que SALE de la economía de
+        # la plataforma, y este CARDS nunca entró en ella (llegó directo del airdrop de CC).
+        try:
+            sig = await withdraw_usdc(solana_rpc_url, privy_signer, wallet_id, wallet,
+                                      privy_operator_wallet_id, privy_operator_address,
+                                      body.address, cards_airdrop_mint, amount, blockhash)
+        except Exception as exc:
+            # El detalle va al log y NO al cuerpo de la respuesta: el str() de un error de httpx
+            # incluye la URL completa del RPC, que en mainnet lleva la api-key en la query. Un 429
+            # del proveedor le entregaría esa clave al navegador del jugador.
+            logger.exception("airdrop: retiro de CARDS falló para %s", wallet)
+            raise HTTPException(502, "withdraw failed")
+        return {"signature": sig, "amount": body.amount, "net": amount / 1_000_000,
+                "fee": 0.0, "address": body.address}
+
     @app.post("/users/me/withdraw")
     async def me_withdraw(body: WithdrawBody, wallet: str = Depends(current_user),
                           wallet_id: str = Depends(current_user_id), s: Session = Depends(db)):
-        # Move USDC from the player's (delegated) wallet to an external address; operator pays gas.
+        # Move USDC (or CARDS, ver _withdraw_cards) from the player's (delegated) wallet to an
+        # external address; operator pays gas.
         if privy_signer is None or not (privy_operator_wallet_id and privy_operator_address):
             raise HTTPException(503, "withdrawals_unavailable")
+        if body.token == "cards":
+            return await _withdraw_cards(body, wallet, wallet_id)
         amount = int(round(body.amount * 1_000_000))   # USDC base units
         if amount <= 0:
             raise HTTPException(422, "amount must be > 0")
@@ -2166,6 +2323,110 @@ def create_app(session_factory, chain: ChainSource,
                                          "signs your pack pulls for you")
         except PrivyNoVerificable:
             raise HTTPException(503, "could not verify your wallet right now; try again in a moment")
+
+    @app.post("/users/me/airdrop/cards/claim")
+    async def me_airdrop_cards_claim(wallet: str = Depends(current_user),
+                                     wallet_id: str = Depends(current_user_id),
+                                     s: Session = Depends(db)):
+        """Reclama el airdrop del jugador. La wallet sale del identity token, así que
+        nadie puede reclamar lo de otro ni aunque se invente el cuerpo de la petición.
+
+        Dos firmas: el jugador autoriza como `temporal` y el operador paga. Es el mismo
+        reparto que en /users/me/nft/withdraw.
+        """
+        _airdrop_o_503()
+        # Mismo freno que en /withdraw y /nft/withdraw, y por la misma razón: el operador es
+        # quien paga la renta de la ATA nueva (y el gas) de cada claim, así que sin límite un
+        # jugador podría vaciarle el SOL a base de reclamar en bucle.
+        _withdraw_throttle(wallet)
+        # Antes que nada: sin delegación no podemos firmar por él, y más vale decírselo con
+        # el mensaje que ya conoce del juego que dejarle chocar contra un 502 de Privy.
+        # Atrapamos un 409 de delegación y lo etiquetamos para que el cliente lo distinga:
+        # los dos 409s que salen de aquí significan cosas diferentes, y decirle al jugador
+        # "ya reclamaste" cuando en realidad "no autorizaste la firma" es mentirle sobre su dinero.
+        try:
+            await _exigir_delegacion(wallet_id)
+        except HTTPException as e:
+            if e.status_code == 409:
+                raise HTTPException(409, "needs_delegation")
+            raise
+        e = _airdrop.get(wallet)
+        if e is None:
+            raise HTTPException(403, "not eligible for this airdrop")
+        index, amount = int(e["i"]), int(e["a"])
+        if await _ya_reclamado(index):
+            raise HTTPException(409, "already claimed")
+
+        # Las pubkeys de CONFIGURACIÓN (vault/mint/distributor) se validan aparte de la
+        # firma y el submit: un typo en el .env no es un fallo del jugador ni algo que se
+        # arregle reintentando la firma, así que no puede salir como 500 ni como 502 — es
+        # 503, igual que el resto de "no sabemos si esto funciona ahora mismo".
+        try:
+            destino = ata(Pubkey.from_string(wallet), Pubkey.from_string(cards_airdrop_mint))
+        except ValueError as exc:
+            # El try cubre dos pubkeys, no solo el mint: si algún día `wallet` llega
+            # deformada, este mensaje tiene que decirlo, o mandaría a quien depura a
+            # revisar CARDS_AIRDROP_MINT en el .env cuando el problema es otro.
+            logger.error("airdrop: pubkey inválida al calcular la ATA de destino (wallet o mint): %s", exc)
+            raise HTTPException(503, "airdrop_unavailable")
+        try:
+            crear_ata = await _airdrop_cuenta(solana_rpc_url, str(destino)) is None
+        except Exception:
+            # El cuerpo del 502 nunca lleva la excepción cruda: en mainnet `solana_rpc_url`
+            # lleva un ?api-key= del proveedor, y volcarla en la respuesta se la mandaría al
+            # navegador del jugador. El detalle completo se queda en el log del servidor.
+            logger.exception("airdrop: check de la ATA falló para %s", wallet)
+            raise HTTPException(502, "airdrop check failed")
+
+        try:
+            blockhash = await fetch_latest_blockhash(solana_rpc_url)
+        except Exception:
+            # Mismo trato que el resto de fallos de RPC de este endpoint: 502 y sin el
+            # texto crudo, que puede traer la url con api-key incluida.
+            logger.exception("airdrop: no se pudo obtener el blockhash para %s", wallet)
+            raise HTTPException(502, "airdrop claim failed")
+        try:
+            tx = build_claim_tx(
+                claimant=wallet, index=index, amount=amount, proof=list(e["p"]),
+                distributor=cards_airdrop_distributor, vault=cards_airdrop_vault,
+                mint=cards_airdrop_mint, operador=privy_operator_address,
+                blockhash=blockhash, crear_ata=crear_ata,
+            )
+        except ValueError as exc:
+            # El try cubre las CUATRO pubkeys de configuración (distributor/vault/mint/
+            # operador), no solo vault y distributor: nombrarlas todas evita mandar a quien
+            # depura a mirar el .env equivocado.
+            logger.error("airdrop: pubkey de configuración inválida (distributor/vault/mint/operador): %s", exc)
+            raise HTTPException(503, "airdrop_unavailable")
+        try:
+            firmada = await privy_signer.sign_solana(wallet_id, tx)                 # el dueño autoriza
+            firmada = await privy_signer.sign_solana(privy_operator_wallet_id, firmada)  # el operador paga
+            sig = await submit_signed_tx(solana_rpc_url, firmada)
+        except Exception:
+            # No nos fiamos del TEXTO del error para saber si "otra pestaña se adelantó":
+            # eso ata el comportamiento a cómo redacte su mensaje el proveedor de RPC de
+            # turno. Se le pregunta a la cadena, la única fuente de verdad de si la PDA ya
+            # existe. Si _ya_reclamado tampoco puede contestar, propaga su propio 502 — la
+            # respuesta correcta también en ese caso, porque tampoco sabemos qué pasó.
+            # El cuerpo del 502 no lleva la excepción cruda por la misma razón que arriba:
+            # puede traer la URL del RPC con su api-key. El detalle se queda en el log.
+            logger.exception("airdrop: submit falló para %s", wallet)
+            if await _ya_reclamado(index):
+                raise HTTPException(409, "already claimed")
+            raise HTTPException(502, "airdrop claim failed")
+
+        # El dinero ya se movió on-chain llegados aquí: fallar la respuesta por no poder
+        # guardar esta fila sería mentir sobre lo que pasó, la misma decisión que en /tip.
+        # Se deja constancia a voces —con la firma, para poder reconstruirlo a mano— y se
+        # responde igual que si hubiera ido bien, porque para el jugador ha ido bien.
+        try:
+            s.add(AirdropClaim(wallet=wallet, ronda=cards_airdrop_round, amount=amount, signature=sig))
+            s.commit()
+            logger.info("airdrop: %s reclamó %s unidades, sig=%s", wallet, amount, sig)
+        except Exception:
+            logger.exception("airdrop: %s reclamó %s unidades (sig=%s) pero no se pudo guardar la fila",
+                             wallet, amount, sig)
+        return {"signature": sig, "amount": amount}
 
     @app.post("/pack-battles")
     async def create_pack_battle(body: CreateBattleBody, wallet: str = Depends(current_user),
@@ -3015,6 +3276,7 @@ def build_default_app() -> FastAPI:
                       dev_endpoints_enabled=s.dev_endpoints_enabled,
                       gacha_rate_limit=s.gacha_rate_limit,
                       min_withdraw_usdc=s.min_withdraw_usdc,
+                      min_withdraw_cards=s.min_withdraw_cards,
                       tips_enabled=s.tips_enabled,
                       min_tip_usdc=s.min_tip_usdc,
                       tip_rate_limit=s.tip_rate_limit,
@@ -3033,7 +3295,12 @@ def build_default_app() -> FastAPI:
                       tracker_pass_7d_usdc=s.tracker_pass_7d_usdc,
                       tracker_pass_30d_usdc=s.tracker_pass_30d_usdc,
                       tracker_pass_rate_limit=s.tracker_pass_rate_limit,
-                      tracker_pass_rate_window_s=s.tracker_pass_rate_window_s)
+                      tracker_pass_rate_window_s=s.tracker_pass_rate_window_s,
+                      cards_airdrop=cargar_asignaciones(s.cards_airdrop_file),
+                      cards_airdrop_distributor=s.cards_airdrop_distributor,
+                      cards_airdrop_vault=s.cards_airdrop_vault,
+                      cards_airdrop_mint=s.cards_airdrop_mint,
+                      cards_airdrop_round=s.cards_airdrop_round)
 
 
 app = build_default_app()

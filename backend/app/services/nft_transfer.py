@@ -308,6 +308,10 @@ async def _get_account(rpc_url: str, pubkey: str, *, commitment: Optional[str] =
         return (r.json().get("result") or {}).get("value")
 
 
+# Alias público: main.py lo usa para saber si existe una PDA o una ATA sin duplicar el RPC.
+leer_cuenta = _get_account
+
+
 class DasUnavailable(Exception):
     """No se pudo preguntar a DAS. NO significa que la carta no exista, solo que no lo sabemos.
 

@@ -1,229 +1,228 @@
-# La API de Collector Crypt — lo que sabemos
+# The Collector Crypt API: what we know
 
-Notas de lo aprendido usando la API de CC, incluida la parte que **no está documentada** y la que
-está documentada pero **se comporta distinto**. Todo lo de aquí está medido contra la API real, no
-deducido; donde no lo esté, se dice.
+Notes on what we learned using the CC API, including the parts that are **undocumented** and the
+parts that are documented but **behave differently**. Everything here was measured against the real
+API, not inferred; where it wasn't, we say so.
 
-Su documentación oficial: <https://docs.collectorcrypt.com/>
+Official documentation: <https://docs.collectorcrypt.com/>
 
 | | devnet | mainnet |
 |---|---|---|
 | Gacha | `https://dev-gacha.collectorcrypt.com` | `https://gacha.collectorcrypt.com` |
-| Metadatos NFT | `https://nft-dev.collectorcrypt.com` | `https://nft.collectorcrypt.com` |
+| NFT metadata | `https://nft-dev.collectorcrypt.com` | `https://nft.collectorcrypt.com` |
 
-Los hosts **no son intercambiables**: un memo de devnet consultado contra el host de mainnet no
-aparece. Es la causa de una hora perdida creyendo que el VRF no funcionaba.
+The hosts **are not interchangeable**: a devnet memo looked up against the mainnet host does not
+show up. That cost us an hour believing the VRF was broken.
 
-`gacha_base_url` vacío deshabilita el gacha entero — es el kill-switch.
-
----
-
-## Lo más importante: `altPlayerAddress` NO es solo entrega
-
-La documentación lo presenta como "a dónde mandar la carta". En la práctica **también se lleva los
-puntos y la atribución del VRF**. Para CC, quien hizo la tirada es la `altPlayerAddress`.
-
-Consecuencias que nos han mordido:
-
-- **Los puntos del gacha se van al escrow.** En las Pack Battle y Royale el escrow es la
-  `altPlayerAddress`, así que los puntos de todas las tiradas de batalla los ha acumulado el
-  escrow, no el jugador. En devnet quedaron **3.069.133 puntos gastables repartidos en 57
-  escrows**. Troceados así, solo **6 wallets** llegan a los 100.000 de una tirada gratis en la
-  máquina más barata: unas 19 tiradas rescatables de 3 millones de puntos. En las máquinas caras,
-  ninguna llega.
-
-  **Y no se pueden mover a otra wallet.** `transferBonusPoints` solo transfiere puntos recibidos
-  por transferencia, no los ganados con tiradas: ver su sección más abajo. Esos puntos se gastan
-  donde están o no se gastan.
-- **El feed público de CC atribuye la tirada al escrow.** Un jugador que mire su historial en CC no
-  ve sus tiradas de batalla. Las ve el escrow.
-- **El VRF también.** `GET /api/vrf/verify` devuelve la wallet del escrow, no la del jugador.
-
-La atribución de verdad se hace con la cabecera `x-api-key`, que identifica al integrador. Nosotros
-no mandamos ninguna (devnet es keyless), así que no tenemos forma de decirle a CC "esta tirada es
-de este usuario" por la vía de la API.
-
-**Cómo se demuestra entonces que una tirada es de un jugador:** por la cadena. Ver la sección del
-memo, más abajo. Es la única prueba que no depende de creerse ni nuestra base ni la de CC.
+An empty `gacha_base_url` disables the whole gacha. It is the kill switch.
 
 ---
 
-## Endpoints documentados
+## The most important thing: `altPlayerAddress` is NOT just delivery
 
-| Método | Ruta | Notas |
+The documentation presents it as "where to send the card". In practice **it also takes the points
+and the VRF attribution**. As far as CC is concerned, the `altPlayerAddress` is who made the pull.
+
+Consequences that bit us:
+
+- **Gacha points go to the escrow.** In Pack Battle and Royale the escrow is the
+  `altPlayerAddress`, so the points from every battle pull were accumulated by the escrow, not the
+  player. On devnet that left **3,069,133 spendable points spread across 57 escrows**. Split up
+  like that, only **6 wallets** reach the 100,000 needed for a free pull on the cheapest machine:
+  about 19 recoverable pulls out of 3 million points. On the expensive machines, none reach it.
+
+  **And they cannot be moved to another wallet.** `transferBonusPoints` only transfers points
+  received by transfer, not points earned by pulling: see its section below. Those points are
+  spent where they are or not at all.
+- **CC's public feed attributes the pull to the escrow.** A player looking at their history on CC
+  does not see their battle pulls. The escrow does.
+- **So does the VRF.** `GET /api/vrf/verify` returns the escrow wallet, not the player's.
+
+Real attribution happens through the `x-api-key` header, which identifies the integrator. We don't
+send one (devnet is keyless), so we have no way to tell CC "this pull belongs to this user" through
+the API.
+
+**So how do we prove a pull belongs to a player?** Through the chain. See the memo section below.
+It is the only proof that doesn't require trusting either our database or CC's.
+
+---
+
+## Documented endpoints
+
+| Method | Path | Notes |
 |---|---|---|
-| GET | `/api/status` | `code → status`; `open` = máquina disponible. Lo leemos **fail-open**: si falla, se asume disponible. |
-| GET | `/api/machines` | catálogo de máquinas |
-| GET | `/api/getNfts` | cartas de una máquina; el valor sale **solo** de `insuredValue` |
-| POST | `/api/generatePack` | devuelve `memo` + `transaction` sin firmar |
-| POST | `/api/generateYoloPacks` | varios sobres de golpe |
-| POST | `/api/submitTransaction` | CC la envía y **paga la fee** |
-| POST | `/api/openPack` | abre por `memo`; `WAITING_FOR_WEBHOOK` = reintentar |
-| GET | `/api/buyback/available`, POST `/api/buyback` | recompra |
-| GET | `/api/getAllWinners` | feed público |
-| GET | `/api/vrf/verify?memo=` | ver abajo |
+| GET | `/api/status` | `code → status`; `open` = machine available. We read it **fail-open**: if it fails, the machine is assumed available. |
+| GET | `/api/machines` | machine catalog |
+| GET | `/api/getNfts` | a machine's cards; value comes **only** from `insuredValue` |
+| POST | `/api/generatePack` | returns `memo` + an unsigned `transaction` |
+| POST | `/api/generateYoloPacks` | several packs at once |
+| POST | `/api/submitTransaction` | CC sends it and **pays the fee** |
+| POST | `/api/openPack` | opens by `memo`; `WAITING_FOR_WEBHOOK` = retry |
+| GET | `/api/buyback/available`, POST `/api/buyback` | buyback |
+| GET | `/api/getAllWinners` | public feed |
+| GET | `/api/vrf/verify?memo=` | see below |
 
-### El flujo de una tirada
+### The flow of a pull
 
 ```
-generatePack  →  transacción sin firmar
-                 la firma el JUGADOR (nunca sale la clave)
-submitTransaction  →  CC la manda a la cadena y paga la fee
-openPack(memo)     →  la carta
+generatePack       →  unsigned transaction
+                      signed by the PLAYER (the key never leaves)
+submitTransaction  →  CC sends it on-chain and pays the fee
+openPack(memo)     →  the card
 ```
 
-Nosotros solo firmamos; **la fee de la tirada la paga CC**, no el operador.
+We only sign; **CC pays the pull's fee**, not our operator.
 
 ### `/api/vrf/verify`
 
-Dos trampas, las dos costaron tiempo:
+Two traps, both cost time:
 
-1. El memo que se le pasa va **sin el sufijo `:open`**. El memo on-chain es `cc-<uuid>:open`; al
-   endpoint se le da `cc-<uuid>`.
-2. El host tiene que ser el de la red donde se hizo la tirada.
+1. The memo you pass goes **without the `:open` suffix**. The on-chain memo is `cc-<uuid>:open`;
+   the endpoint takes `cc-<uuid>`.
+2. The host has to be the one for the network where the pull happened.
 
-Aun acertando las dos, lo que devuelve atribuye la tirada a la `altPlayerAddress`.
+Even getting both right, the response attributes the pull to the `altPlayerAddress`.
 
 ---
 
-## Endpoints NO documentados
+## Undocumented endpoints
 
-Salieron mirando la pestaña de red de su propia web. **Pueden cambiar o desaparecer sin aviso**:
-todo lo que leemos de ellos va con `.get` y valor por defecto, nunca por índice.
+Found by watching the network tab of their own website. **They can change or disappear without
+notice**: everything we read from them uses `.get` with a default, never indexing.
 
 ### `GET /api/freeSpins?wallet=`
 
-| campo | qué es |
+| field | what it is |
 |---|---|
-| `points` | puntos acumulados |
-| `usedPoints` | ya gastados en tiradas gratis → **lo gastable es la resta** |
-| — | esa resta es lo **gastable en tiradas**, y NO es lo transferible: ver `transferBonusPoints` |
-| `freeSpinsLeftToday` | tope diario restante |
-| `freeSpinsLeft`, `pointsPerSpin`, `pointsUntilNextSpin` | **ver el aviso de abajo** |
+| `points` | accumulated points |
+| `usedPoints` | already spent on free pulls → **what's spendable is the difference** |
+| (difference) | that difference is what's **spendable on pulls**, and it is NOT what's transferable: see `transferBonusPoints` |
+| `freeSpinsLeftToday` | remaining daily cap |
+| `freeSpinsLeft`, `pointsPerSpin`, `pointsUntilNextSpin` | **see the warning below** |
 
-**Es de la WALLET, no de la máquina.** Acepta `wallet` y nada más: le pasamos `packType`, `machine`
-y `code` y la respuesta no cambia.
+**It belongs to the WALLET, not the machine.** It accepts `wallet` and nothing else: we passed it
+`packType`, `machine` and `code`, and the response didn't change.
 
-**Cuidado con `freeSpinsLeft` y `pointsPerSpin`.** Parecen la respuesta a "¿cuántas tiradas gratis
-tengo?", pero vienen calculados **siempre sobre una máquina de 50 $**. Una tirada gratis no cuesta
-lo mismo en todas: cuesta 100.000 puntos en la de 50 $ y **sube en proporción al precio**, así que
-en la de 5.000 $ son 10 millones. Leerlos tal cual anunciaba tres tiradas gratis en una máquina
-donde no llegaba ni para una.
+**Careful with `freeSpinsLeft` and `pointsPerSpin`.** They look like the answer to "how many free
+pulls do I have?", but they are **always calculated against a $50 machine**. A free pull doesn't
+cost the same everywhere: it costs 100,000 points on the $50 machine and **scales with price**, so
+on the $5,000 machine it is 10 million. Reading them as-is advertised three free pulls on a machine
+where there wasn't enough for one.
 
-La fórmula, tal cual la usa su propia web:
+The formula, exactly as their own website uses it:
 
 ```js
-requeridos = Math.round(100_000 * (precio / 50))
-disponible = points - usedPoints
-tiradas    = Math.floor(disponible / requeridos)
-resto      = disponible % requeridos
-hastaLaSig = (resto === 0 && disponible > 0) ? 0 : requeridos - resto
+required   = Math.round(100_000 * (price / 50))
+available  = points - usedPoints
+pulls      = Math.floor(available / required)
+remainder  = available % required
+untilNext  = (remainder === 0 && available > 0) ? 0 : required - remainder
 ```
 
-Comprobada contra una wallet real de 364.060 puntos: la API dice `freeSpinsLeft: 3` y
-`pointsUntilNextSpin: 35.940`, que es exactamente lo que da la fórmula **para el precio base**. En
-la de 250 $ esos mismos puntos no dan ninguna.
+Checked against a real wallet with 364,060 points: the API says `freeSpinsLeft: 3` and
+`pointsUntilNextSpin: 35,940`, which is exactly what the formula gives **for the base price**. On
+the $250 machine those same points give none.
 
-Nosotros la tenemos dos veces a propósito: `tiradas_gratis()` en `app/services/gacha.py` —la
-puerta— y `tiradasGratis()` en `src/ui/screens/gacha/freeSpins.ts` —lo que se pinta—.
+We implement it twice on purpose: `tiradas_gratis()` in `app/services/gacha.py` (the gate) and
+`tiradasGratis()` in `src/ui/screens/gacha/freeSpins.ts` (what gets rendered).
 
-### Qué máquinas dan tiradas gratis
+### Which machines offer free pulls
 
-Dos condiciones, y ninguna es del jugador:
+Two conditions, and neither depends on the player:
 
-- **`machine.freeSpins`**, en `/api/machines`. Muchas no las dan: en devnet 3 de 9, en mainnet 16
-  de 43. Pedir una en la que no → `400 "Invalid pack type"`.
-- **`freePacksStatus`**, en `/api/status`. Interruptor **global** de CC: en `closed` no hay tiradas
-  gratis en ninguna máquina.
+- **`machine.freeSpins`**, in `/api/machines`. Many machines don't offer them: 3 of 9 on devnet, 16
+  of 43 on mainnet. Requesting one where it's off → `400 "Invalid pack type"`.
+- **`freePacksStatus`**, in `/api/status`. A **global** CC switch: when `closed`, there are no free
+  pulls on any machine.
 
-El orden de validación de `freePack`, medido: **nonce** → tipo de máquina → firma → puntos.
+The validation order of `freePack`, measured: **nonce** → machine type → signature → points.
 
 ### `POST /api/generateFreePack` + `POST /api/freePack`
 
-**CC endureció este canje sin avisar, y nos lo rompió entero** (2026-08-13). Antes bastaba una
-transacción firmada cualquiera; ahora hay un reto de dos pasos. Con el formato viejo responde
-`400 {"error":"Missing or invalid nonce"}`, y ninguna tirada gratis se puede canjear.
+**CC hardened this redemption without notice, and it broke ours completely** (2026-08-13). Any
+signed transaction used to be enough; now there is a two-step challenge. With the old format it
+responds `400 {"error":"Missing or invalid nonce"}`, and no free pull can be redeemed.
 
-**Y SOLO EN MAINNET.** Devnet sigue con el contrato viejo: allí `/api/generateFreePack` **no
-existe** (404) y `/api/freePack` acepta el formato de antes. Comprobado también en su frontend, que
-en devnet manda el cuerpo sin `nonce` y no llama a `generateFreePack` en ninguna parte: es un
-despliegue suyo que va por detrás.
+**And ONLY ON MAINNET.** Devnet still runs the old contract: there `/api/generateFreePack` **doesn't
+exist** (404) and `/api/freePack` accepts the old format. Also confirmed in their frontend, which on
+devnet sends the body without `nonce` and never calls `generateFreePack`: their deployment there
+simply lags behind.
 
-Exigir el nonce en las dos redes dejó devnet con un 502 y ninguna tirada gratis, así que el código
-lo decide en caliente: `generate_free_pack` devuelve `None` cuando el endpoint da 404, y entonces
-la prueba vuelve a ser el `build_memo_tx` de siempre. El 404 se distingue del resto de fallos con
-`GachaEndpointMissing`; cualquier otro error se propaga, porque tratar una caída de CC como "esta
-red es la vieja" mandaría el formato antiguo a mainnet y el jugador vería el error del nonce.
+Requiring the nonce on both networks left devnet with a 502 and no free pulls, so the code decides
+at runtime: `generate_free_pack` returns `None` when the endpoint gives a 404, and the proof falls
+back to the usual `build_memo_tx`. The 404 is distinguished from other failures with
+`GachaEndpointMissing`; any other error propagates, because treating a CC outage as "this is the
+old network" would send the old format to mainnet and the player would see the nonce error.
 
-Cuando devnet se actualice no habrá que tocar nada: en cuanto `generateFreePack` deje de dar 404,
-el canje pasa solo al flujo nuevo.
+When devnet is updated nothing needs to change: as soon as `generateFreePack` stops returning 404,
+redemption moves to the new flow on its own.
 
 ```
-POST /api/generateFreePack  {publicKey, packType}   →  {nonce, expiry}   (minutos)
+POST /api/generateFreePack  {publicKey, packType}   →  {nonce, expiry}   (minutes)
 POST /api/freePack          {publicKey, packType, turbo, transactionSignature, nonce}  →  {memo}
 ```
 
-El `nonce` viaja por **dos vías a la vez**, y CC comprueba las dos:
+The `nonce` travels **two ways at once**, and CC checks both:
 
-1. En el cuerpo de `/api/freePack`.
-2. **Dentro de la transacción firmada**, como contenido de una instrucción memo que además lleva
-   la wallet en sus cuentas **marcada como firmante**. Esa marca es lo que ata el nonce a la
-   wallet: sin ella el memo sería un texto que podría haber escrito cualquiera.
+1. In the body of `/api/freePack`.
+2. **Inside the signed transaction**, as the content of a memo instruction that also lists the
+   wallet in its accounts **marked as a signer**. That flag is what binds the nonce to the wallet:
+   without it, the memo would just be text anyone could have written.
 
-La transacción replica la de su web: transferencia de 0 lamports de la wallet a sí misma, más el
-memo con el nonce. Lo construye `build_free_pack_proof_tx` en `app/services/solana_tx.py`;
-`build_memo_tx`, con su texto fijo, **ya no sirve para esto**.
+The transaction mirrors the one from their website: a 0-lamport transfer from the wallet to
+itself, plus the memo with the nonce. It is built by `build_free_pack_proof_tx` in
+`app/services/solana_tx.py`; `build_memo_tx`, with its fixed text, **no longer works for this**.
 
-El orden de validación, medido: **el nonce se comprueba antes que la firma** (con una firma basura
-y sin nonce, el error es el del nonce).
+The validation order, measured: **the nonce is checked before the signature** (with a garbage
+signature and no nonce, the error is the nonce one).
 
-Lo demás sigue igual:
+Everything else is unchanged:
 
-- **`transactionSignature` no se envía a la cadena.** Actúa como prueba de propiedad, no como
-  pago.
-- **`altPlayerAddress` se acepta en el cuerpo pero se ignora.** La carta va **siempre** a
-  `publicKey`. Comprobado on-chain. Por eso los puntos del escrow no se pueden convertir en cartas
-  para un jugador: el sobre gratis lo recibe el escrow.
-- No todas las máquinas lo admiten.
+- **`transactionSignature` is not sent on-chain.** It acts as proof of ownership, not payment.
+- **`altPlayerAddress` is accepted in the body but ignored.** The card **always** goes to
+  `publicKey`. Confirmed on-chain. That's why escrow points can't be turned into cards for a
+  player: the free pack is received by the escrow.
+- Not every machine supports it.
 
 ### `GET /api/user/bonusTransfers?wallet=`
 
-Historial de transferencias de puntos.
+Point transfer history.
 
-### `POST /api/user/transferBonusPoints` (y `/prepare`)
+### `POST /api/user/transferBonusPoints` (and `/prepare`)
 
-Mueve puntos de una wallet a otra. **Funciona, y sabemos usarlo desde el servidor** — pero no
-sirve para rescatar los puntos de los escrows, por el motivo del final de esta sección.
+Moves points from one wallet to another. **It works, and we know how to use it from the server**,
+but it can't rescue the points stuck in escrows, for the reason at the end of this section.
 
-Aquí decía antes que `/prepare` devolvía 401 y que no había forma de resolverlo. Era un
-diagnóstico equivocado: el 401 venía de mandar un token con el `aud` de otra red.
+This section used to say `/prepare` returned 401 and there was no way around it. That diagnosis was
+wrong: the 401 came from sending a token with another network's `aud`.
 
-**El orden de validación**, medido: enviarse a uno mismo → importe mínimo → autorización. Como la
-autorización se comprueba la última, un 401 aquí ya garantiza que el cuerpo era válido.
+**The validation order**, measured: sending to yourself → minimum amount → authorization. Since
+authorization is checked last, a 401 here guarantees the body was valid.
 
-- **Mínimo 1.000 puntos** por transferencia.
-- **No se puede enviar a uno mismo.**
+- **Minimum 1,000 points** per transfer.
+- **You can't send to yourself.**
 
-#### La autorización: un JWT de Privy que emitimos nosotros
+#### Authorization: a Privy JWT we mint ourselves
 
-La cabecera es `Authorization: Bearer <JWT>`, un token de Privy de **la app de CC**, y CC lo ata al
-`fromWallet`: con el token de otra wallet responde 401 aunque el cuerpo sea correcto.
+The header is `Authorization: Bearer <JWT>`, a Privy token for **CC's app**, and CC binds it to the
+`fromWallet`: with another wallet's token it returns 401 even if the body is correct.
 
-No hace falta que nadie inicie sesión a mano. El token se emite por servidor con el login
-Sign-In-With-Solana de Privy, firmando el mensaje con la wallet:
+Nobody needs to log in by hand. The token is minted server-side through Privy's
+Sign-In-With-Solana login, signing the message with the wallet:
 
 ```
 POST auth.privy.io/api/v1/siws/init          {address}                → nonce
-     firmar el mensaje con la wallet (Privy: signMessage, base64)     → signature
+     sign the message with the wallet (Privy: signMessage, base64)   → signature
 POST auth.privy.io/api/v1/siws/authenticate  {message, signature, …}  → token (24 h)
 ```
 
-Tres cosas que hacen fallar el login si faltan:
+Three things that make the login fail if missing:
 
-- La cabecera `origin` con el host de CC, o Privy responde `403 missing_origin`.
-- Un `User-Agent` de navegador: sin él, 403 de Cloudflare. Es el mismo tropiezo que ya
-  documentamos en `privy_signer._wallet`.
-- El **texto exacto** del mensaje. Cualquier variación da `invalid_data`. Es el de la web de CC:
+- An `origin` header with CC's host, or Privy responds `403 missing_origin`.
+- A browser `User-Agent`: without it, a Cloudflare 403. It is the same stumble we already
+  documented in `privy_signer._wallet`.
+- The **exact text** of the message. Any variation gives `invalid_data`. It's the one from CC's
+  website:
 
 ```
 <host> wants you to sign in with your Solana account:
@@ -240,110 +239,110 @@ Resources:
 - https://privy.io
 ```
 
-**Cada red de CC tiene su propia app de Privy**, y confundirlas es exactamente el 401 que nos
-costó el diagnóstico anterior:
+**Each CC network has its own Privy app**, and mixing them up is exactly the 401 behind the
+earlier wrong diagnosis:
 
-| red | `privy-app-id` |
+| network | `privy-app-id` |
 |---|---|
 | mainnet | `cmdgt21w400lgky0mkn069jui` |
 | devnet | `cmcwv1wi201tnjm0mmexyzxyi` |
 
-**En devnet no se puede**: su app tiene lista blanca y el login responde
-`401 allowlist_rejected` para cualquier wallet nuestra. Esto es **solo mainnet**.
+**It doesn't work on devnet**: that app has an allowlist and the login responds
+`401 allowlist_rejected` for any of our wallets. This is **mainnet only**.
 
-#### El flujo
+#### The flow
 
 ```
 prepare(fromWallet, toWallet, amount)   →  {nonce, expiry (~5 min), transferable}
-firmar un memo con la wallet            →  prueba de propiedad
+sign a memo with the wallet             →  proof of ownership
 transferBonusPoints(… nonce, signedTransaction)  →  {transferred, newBonusPoints, newPointsRemaining}
 ```
 
-El `signedTransaction` es un memo firmado que no se envía a la cadena, con el `build_memo_tx` de
-toda la vida y su texto fijo. **Ojo, que aquí las dos pruebas de propiedad ya NO son la misma**:
-`freePack` pasó a exigir el nonce dentro del memo (ver su sección) y esta no. Comprobado el
-2026-08-13: el envío de puntos sigue aceptando el memo simple.
+The `signedTransaction` is a signed memo that isn't sent on-chain, built with the usual
+`build_memo_tx` and its fixed text. **Note that the two proofs of ownership are no longer the
+same**: `freePack` now requires the nonce inside the memo (see its section) and this one doesn't.
+Confirmed on 2026-08-13: sending points still accepts the simple memo.
 
-#### La bolsa "bonus" es un CUPO, y es lo que limita cuánto se puede enviar
+#### The "bonus" bucket is an ALLOWANCE, and it's what limits how much can be sent
 
-`transferable` **no es** `points - usedPoints`, y tampoco es "lo recibido por transferencia", que
-es lo que decía aquí antes. El modelo real, medido:
+`transferable` **is not** `points - usedPoints`, nor is it "what was received by transfer", which is
+what this section used to say. The real model, measured:
 
-- Cada wallet tiene un **cupo de envío** (`newBonusPoints` en la respuesta) que **lo crean las
-  transferencias RECIBIDAS** y que **baja exactamente lo que se envía**.
-- Lo que se puede mandar está acotado por ese cupo, pero **los puntos en sí pueden ser de
-  tiradas**: con cupo de sobra se envían puntos ganados jugando.
+- Each wallet has a **sending allowance** (`newBonusPoints` in the response) that **is created by
+  RECEIVED transfers** and **goes down by exactly what is sent**.
+- What can be sent is capped by that allowance, but **the points themselves can come from pulls**:
+  with enough allowance, points earned by playing can be sent.
 
-Los números, de tres envíos reales desde `8QDBKx8…`:
+The numbers, from three real sends from `8QDBKx8…`:
 
-| | enviado | cupo después |
+| | sent | allowance after |
 |---|---|---|
-| ids 6127 + 6129 | 1.000 + 44.534 | 347.773 → 302.239 |
-| id 6239 | 74.153 | 302.239 → 228.086 |
+| ids 6127 + 6129 | 1,000 + 44,534 | 347,773 → 302,239 |
+| id 6239 | 74,153 | 302,239 → 228,086 |
 
-El último es la prueba de que no hace falta haber recibido esos puntos: entre el segundo envío y el
-tercero esa wallet **no recibió ninguna transferencia**, solo ganó puntos tirando, y aun así los
-pudo mandar. Lo que se agotó en el segundo envío fue lo gastable, no el cupo.
+The last one proves you don't need to have received those points: between the second and third
+send that wallet **received no transfer at all**, it only earned points by pulling, and it could
+still send them. What ran out on the second send was the spendable balance, not the allowance.
 
-Al revés también se comprobó: `2cdajp4Y…` (29.175 puntos) y `EweRxQsf…` (160.841), que **nunca han
-recibido una transferencia**, tienen cupo 0 y dan `transferable: 0` con el error explícito
-`you can send up to 0`.
+The reverse was confirmed too: `2cdajp4Y…` (29,175 points) and `EweRxQsf…` (160,841), which **have
+never received a transfer**, have an allowance of 0 and return `transferable: 0` with the explicit
+error `you can send up to 0`.
 
-**Consecuencia, que no cambia: los ~3 millones varados en los escrows no se pueden rescatar.** Los
-escrows nunca han recibido una transferencia, así que su cupo es cero. La pregunta que abría la
-sección de `altPlayerAddress` sigue cerrada en negativo, pero por el cupo, no por el origen de los
-puntos.
+**The consequence doesn't change: the ~3 million points stranded in escrows can't be rescued.**
+Escrows have never received a transfer, so their allowance is zero. The question raised in the
+`altPlayerAddress` section stays closed in the negative, but because of the allowance, not the
+origin of the points.
 
-Y para cualquier función de "enviar puntos": lo enviable hay que leerlo de `prepare`, nunca
-calcularlo con la fórmula de `freeSpins`.
+And for any "send points" feature: what's sendable must be read from `prepare`, never computed with
+the `freeSpins` formula.
 
-#### Después de un envío, `points - usedPoints` puede quedar NEGATIVO
+#### After a send, `points - usedPoints` can go NEGATIVE
 
-Medido: `transferable` (74.153) llegó a ser mayor que `points - usedPoints` (72.299), y tras el
-envío la resta quedó en **-1.854**. O sea que la fórmula de `freeSpins` no es la contabilidad que
-usa CC para transferir, y puede quedar por debajo de cero.
+Measured: `transferable` (74,153) was higher than `points - usedPoints` (72,299), and after the send
+the difference ended up at **-1,854**. So the `freeSpins` formula is not the accounting CC uses for
+transfers, and it can drop below zero.
 
-No rompe nada nuestro porque los tres sitios que la calculan acotan a cero por su cuenta
-(`free_spins()` en `app/services/gacha.py`, y `tiradas_gratis()` / `tiradasGratis()`), pero
-quien escriba un cuarto tiene que saberlo.
+It doesn't break anything of ours because the three places that compute it clamp to zero on their
+own (`free_spins()` in `app/services/gacha.py`, and `tiradas_gratis()` / `tiradasGratis()`), but
+whoever writes a fourth one needs to know.
 
 ### `getPoints`
 
-Ojo con los dos campos, que **no son lo mismo**:
+Careful with the two fields, **they are not the same**:
 
-- `totalPoints` → puntos ganados **en toda la vida** de la wallet. No es lo que se puede gastar.
-- `pointsRemaining` → lo gastable.
+- `totalPoints` → points earned over the wallet's **entire lifetime**. Not what can be spent.
+- `pointsRemaining` → what's spendable.
 
-Confundirlos infla la cifra: en devnet la diferencia era 3.269.133 frente a 3.069.133.
-
----
-
-## El memo, y por qué es la única prueba
-
-Cada tirada lleva un `memo` (`cc-<uuid>`) que **viaja dentro de la transacción de compra** como
-instrucción `spl-memo`, visible en los logs de cualquier explorador. Y esa transacción **la firma
-el jugador**.
-
-O sea: en la cadena, para siempre y sin depender de nosotros, están juntos el identificador de la
-tirada y la firma de quien la pagó. Eso es lo que demuestra que la tirada es suya, aunque CC se la
-atribuya al escrow.
-
-Al ser el memo un UUID, ir de la tirada a su transacción es **determinista**, no arqueología:
-basta buscar en el historial de firmas del jugador la que lo contiene. Es lo que hace
-`backend/scripts/backfill_pull_signatures.py` para las tiradas anteriores a la columna
-`battle_pulls.tx_signature`.
-
-Único límite: `getSignaturesForAddress` pagina hacia atrás de 1000 en 1000, así que una wallet con
-muchísimo movimiento puede tener la tirada más atrás de lo que se recorre. La prueba sigue en la
-cadena; solo que no la hemos localizado.
+Mixing them up inflates the number: on devnet the difference was 3,269,133 versus 3,069,133.
 
 ---
 
-## Cosas sueltas que cuestan tiempo si no se saben
+## The memo, and why it is the only proof
 
-- **Valor de una carta: solo `insuredValue`.** Ningún otro campo.
-- **Mainnet entrega NFTs de Metaplex CORE**, no SPL ni cNFT — con `PermanentFreezeDelegate` de CC.
-  No tienen cuenta de token, así que **no hay renta de ATA que recuperar** (los 2.039.280 lamports
-  solo aplican a los SPL).
-- **En devnet el USDC es un mint propio** (`Gh9Zw…`), no el de circle.
-- `openPack` puede responder `WAITING_FOR_WEBHOOK`: no es un error, es "todavía no, reintenta".
+Every pull carries a `memo` (`cc-<uuid>`) that **travels inside the purchase transaction** as an
+`spl-memo` instruction, visible in the logs of any explorer. And that transaction **is signed by the
+player**.
+
+In other words: on-chain, permanently and without depending on us, the pull's identifier and the
+signature of whoever paid for it sit together. That is what proves the pull is theirs, even though
+CC attributes it to the escrow.
+
+Since the memo is a UUID, going from a pull to its transaction is **deterministic**, not
+archaeology: just search the player's signature history for the one that contains it. That's what
+`backend/scripts/backfill_pull_signatures.py` does for pulls made before the
+`battle_pulls.tx_signature` column existed.
+
+The only limit: `getSignaturesForAddress` pages backwards 1,000 at a time, so a wallet with a lot of
+activity may have the pull further back than we traverse. The proof is still on-chain; we just
+haven't located it.
+
+---
+
+## Loose ends that cost time if you don't know them
+
+- **A card's value: `insuredValue` only.** No other field.
+- **Mainnet delivers Metaplex CORE NFTs**, not SPL or cNFT, with CC's `PermanentFreezeDelegate`.
+  They have no token account, so **there is no ATA rent to recover** (the 2,039,280 lamports only
+  apply to SPL).
+- **On devnet, USDC is a custom mint** (`Gh9Zw…`), not Circle's.
+- `openPack` can return `WAITING_FOR_WEBHOOK`: it's not an error, it means "not yet, retry".

@@ -1,64 +1,64 @@
-# Las wallets de escrow
+# Escrow wallets
 
-Cada partida (Pack Battle o Royale) usa una wallet de escrow: recibe los buy-ins, es la
-`altPlayerAddress` de las tiradas y reparte al final. Son wallets de servidor de Privy, y el
-backend firma con ellas por `wallet_id`.
+Every game (Pack Battle or Royale) uses an escrow wallet: it receives the buy-ins, is the
+`altPlayerAddress` of the pulls, and pays out at the end. They are Privy server wallets, and the
+backend signs with them by `wallet_id`.
 
-## Lo que hay que tener claro antes de tocar nada
+## What to understand before touching anything
 
-**Una wallet de Privy es la misma en todas las cadenas.** Mismo par de claves, misma dirección en
-devnet y en mainnet. Lo que cambia por red es lo que tiene **dentro**.
+**A Privy wallet is the same on every chain.** Same key pair, same address on devnet and mainnet.
+What changes per network is what it **holds**.
 
-De ahí sale la separación en dos piezas:
+That's where the split into two parts comes from:
 
-| | Dónde vive | Qué guarda |
+| | Where it lives | What it stores |
 |---|---|---|
-| **Identidad** | `escrow_inventory` — base **compartida** | dirección + `wallet_id` de Privy |
-| **Estado** | `escrow_wallets` — base de **cada red** | libre / en uso / retenida, `battle_id`, `times_used` |
+| **Identity** | `escrow_inventory`, a **shared** database | address + Privy `wallet_id` |
+| **State** | `escrow_wallets`, **each network's** database | free / in use / retained, `battle_id`, `times_used` |
 
-Por eso la misma wallet puede estar **ocupada en devnet y libre en mainnet** a la vez sin que sea
-un error: describen cadenas distintas.
+That's why the same wallet can be **busy on devnet and free on mainnet** at the same time without
+it being an error: they describe different chains.
 
-Antes de partirlo, el pool mezclaba las dos cosas en la base de cada red, con dos consecuencias:
-mainnet arrancaba vacío y creaba wallets nuevas teniendo 79 ya hechas sin estrenar, y la única
-lista de cuáles son escrows vivía en la base de **devnet** — una base de pruebas de la que
-dependía producción.
+Before the split, the pool mixed both in each network's database, with two consequences: mainnet
+started empty and created new wallets while 79 unused ones already existed, and the only list of
+which wallets are escrows lived in the **devnet** database, a test database that production depended
+on.
 
-## Cómo se pide una wallet
+## How a wallet is requested
 
-`escrow_pool.adquirir()`, por orden de preferencia:
+`escrow_pool.adquirir()`, in order of preference:
 
-1. Una **libre del pool de esta red** (`status = "free"`).
-2. Una **del inventario compartido que esta red no haya estrenado** nunca.
-3. Solo entonces, **una nueva en Privy** — que además se da de alta en el inventario, para que la
-   red que la estrena no se la quede.
+1. A **free one from this network's pool** (`status = "free"`).
+2. One **from the shared inventory that this network has never used**.
+3. Only then, **a new one in Privy**, which is also registered in the inventory so that the network
+   that first uses it doesn't keep it to itself.
 
-## Estados
+## States
 
-- **`free`** — vacía y disponible.
-- **`in_use`** — atada a una partida.
-- **`retained`** — al terminar la partida se comprobó que **todavía tiene algo** (USDC o cartas) y
-  no se devuelve al pool. Es una señal de que algo quedó sin repartir, no un estado normal. En
-  devnet hay 15 así.
+- **`free`**: empty and available.
+- **`in_use`**: bound to a game.
+- **`retained`**: when the game ended, it was found to **still hold something** (USDC or cards) and
+  is not returned to the pool. It signals that something wasn't paid out; it isn't a normal state.
+  There are 15 like this on devnet.
 
-`liberar()` mira la cadena antes de marcar `free`: nunca se devuelve al pool por lo que diga la
-base, sino por lo que tenga la wallet.
+`liberar()` checks the chain before marking a wallet `free`: a wallet is never returned to the pool
+based on what the database says, only on what the wallet actually holds.
 
-## Configuración
+## Configuration
 
 ```
-ESCROW_INVENTORY_URL=sqlite:////ruta/absoluta/escrow_inventory.db
+ESCROW_INVENTORY_URL=sqlite:////absolute/path/escrow_inventory.db
 ```
 
-**Vacío = apagado**, y todo se comporta como antes. Solo cuando se configura entra el paso 2.
+**Empty = off**, and everything behaves as before. Step 2 only kicks in once it's configured.
 
-**La ruta tiene que ser ABSOLUTA** — cuatro barras, `sqlite:////`. Es el mismo fallo que motivó
-`scripts/_destino.py`: una ruta relativa de SQLite se resuelve contra el directorio de trabajo, así
-que el backend y un script lanzado desde otro sitio escribirían en inventarios distintos sin dar
-ningún error. Y aquí el daño es peor que en un script: **dos inventarios divergentes reparten la
-misma wallet a dos partidas**.
+**The path must be ABSOLUTE**: four slashes, `sqlite:////`. It's the same bug that led to
+`scripts/_destino.py`: a relative SQLite path resolves against the working directory, so the backend
+and a script launched from somewhere else would write to different inventories without any error.
+And the damage here is worse than in a script: **two diverging inventories hand the same wallet to
+two games**.
 
-## Cargar el inventario la primera vez
+## Loading the inventory the first time
 
 ```bash
 cd backend
@@ -66,24 +66,24 @@ PYTHONPATH=. .venv/bin/python3 scripts/seed_escrow_inventory.py --desde sqlite:/
 PYTHONPATH=. .venv/bin/python3 scripts/seed_escrow_inventory.py --desde sqlite:///battlearena.db --go
 ```
 
-Dry-run por defecto, idempotente, y **no habla con Privy: no crea ninguna wallet**. Copia solo la
-identidad; el estado se queda en cada red.
+Dry run by default, idempotent, and **it doesn't talk to Privy: it creates no wallets**. It copies
+only the identity; state stays on each network.
 
-Comprobado que las 79 de devnet están **completamente limpias en mainnet** (0 SOL, 0 cuentas de
-token, 0 transacciones), así que estrenarlas ahí no arrastra nada.
+Confirmed that the 79 devnet wallets are **completely clean on mainnet** (0 SOL, 0 token accounts,
+0 transactions), so using them there carries nothing over.
 
-Pendiente: dar de alta las **5 de mainnet anteriores al pool**.
+Pending: registering the **5 mainnet wallets that predate the pool**.
 
-## Lo que NO se comparte
+## What is NOT shared
 
-Los **barridos de recuperación nunca se juntan**. `recover_escrow_usdc.py` y
-`sweep_stranded_cards.py` van cada uno contra su red: base distinta, RPC distinto, y
-`_destino.anunciar` diciendo en voz alta contra qué se va a escribir. Compartir la identidad de las
-wallets no toca eso.
+**Recovery sweeps are never combined.** `recover_escrow_usdc.py` and `sweep_stranded_cards.py` each
+run against their own network: different database, different RPC, and `_destino.anunciar` stating
+out loud what it's about to write to. Sharing wallet identity doesn't change that.
 
-## Puntos del gacha varados
+## Stranded gacha points
 
-Las tiradas de batalla acumulan los puntos de CC en el escrow, no en el jugador, porque el escrow
-es la `altPlayerAddress`. En devnet hay 3.069.133 puntos gastables repartidos en 57 escrows, y solo
-6 llegan al mínimo de una tirada gratis. No hay forma de moverlos: el endpoint de transferencia
-devuelve 401. El detalle está en [COLLECTOR-CRYPT-API.md](COLLECTOR-CRYPT-API.md).
+Battle pulls accumulate CC points in the escrow, not the player, because the escrow is the
+`altPlayerAddress`. On devnet there are 3,069,133 spendable points spread across 57 escrows, and only
+6 reach the minimum for a free pull. There is no way to move them: CC's points transfer is capped by
+a sending allowance that only received transfers create, and escrows have never received one, so
+their allowance is zero. The details are in [COLLECTOR-CRYPT-API.md](COLLECTOR-CRYPT-API.md).

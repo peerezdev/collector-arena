@@ -1,69 +1,69 @@
-# Instalación en mini PC — BattleArena mainnet
+# Mini PC installation: Collector Arena mainnet
 
-Documento pensado para seguirlo **con Claude Code en el propio mini PC**. Instala el stack de
-mainnet detrás de un Cloudflare Tunnel, sin abrir puertos.
+A document meant to be followed **with Claude Code on the mini PC itself**. It installs the mainnet
+stack behind a Cloudflare Tunnel, without opening any ports.
 
 ```bash
-# En el mini PC, con Debian 12 o Ubuntu 24.04 recién instalado:
+# On the mini PC, with a fresh Debian 12 or Ubuntu 24.04:
 sudo apt update && sudo apt install -y git
-git clone <URL-DEL-REPO> ~/battlearena-deploy
+git clone <REPO-URL> ~/battlearena-deploy
 cd ~/battlearena-deploy
 claude
 ```
 
-Y dile: **«Sigue `deploy/INSTALL-MINIPC.md` para instalar esto. Ve fase por fase y párate en cada
-comprobación.»**
+And tell it: **"Follow `deploy/INSTALL-MINIPC.md` to install this. Go phase by phase and stop at
+every check."**
 
 ---
 
-## Para el agente: reglas que no se pueden romper
+## For the agent: rules that must not be broken
 
-1. **Nunca generes la clave del oráculo en esta máquina.** `oracle/app/keys.py` la autogenera si
-   no existe; una clave nueva invalida el `VITE_ORACLE_PUBKEY` con el que se compiló el frontend
-   y el juego rechaza **todas** las atestaciones. La clave se copia desde la máquina del usuario.
-2. **Un solo proceso de uvicorn por servicio, jamás `--workers`.** El backend guarda estado en
-   memoria (rate-limits, el `asyncio.Lock` que serializa los buy-ins, el set de WebSockets del
-   chat, tareas de fondo). Dos procesos = doble liquidación de USDC real.
-3. **`DEV_ENDPOINTS_ENABLED` se queda en `false`.** `/pack-battles/{id}/join-bot` mueve USDC sin
-   autenticación.
-4. **No inventes valores de `.env`.** Si falta un secreto, **para y pídeselo al usuario**. Un
-   valor inventado aquí se traduce en dinero mal enviado, no en un test rojo.
-5. **No reinicies el backend con batallas en vuelo.** Comprueba antes
+1. **Never generate the oracle key on this machine.** `oracle/app/keys.py` auto-generates it if it
+   doesn't exist; a new key invalidates the `VITE_ORACLE_PUBKEY` the frontend was built with, and the
+   game rejects **every** attestation. The key is copied from the user's machine.
+2. **A single uvicorn process per service, never `--workers`.** The backend keeps in-memory state
+   (rate limits, the `asyncio.Lock` that serializes buy-ins, the chat's set of WebSockets, background
+   tasks). Two processes = a double settlement of real USDC.
+3. **`DEV_ENDPOINTS_ENABLED` stays `false`.** `/pack-battles/{id}/join-bot` moves USDC without
+   authentication.
+4. **Don't make up `.env` values.** If a secret is missing, **stop and ask the user for it**. A
+   made-up value here turns into money sent to the wrong place, not a red test.
+5. **Don't restart the backend with battles in progress.** Check first with
    `sqlite3 backend/battlearena.mainnet.db "select id,status from pack_battles where status='running'"`.
-6. **No commitees nada de lo que crees aquí.** Los `.env`, la clave del oráculo y las
-   credenciales del túnel están en `.gitignore` por una razón.
+6. **Don't commit anything you create here.** The `.env` files, the oracle key and the tunnel
+   credentials are in `.gitignore` for a reason.
 
-## Lo que hay que tener a mano antes de empezar
+## What to have at hand before starting
 
-Pídeselo al usuario de golpe al principio, no de uno en uno:
+Ask the user for all of it at once at the start, not one at a time:
 
-- [ ] URL del repositorio **en formato SSH** (`git@github.com:usuario/repo.git`) y acceso para
-      añadirle una *deploy key* (Settings → Deploy keys)
-- [ ] Dominio a usar (p. ej. `battlearena.tld`) y **cuenta de Cloudflare** con ese dominio dado de alta
-- [ ] Fichero `oracle_key.json` de la máquina actual
-- [ ] Contenido de `backend/.env` (secretos de Privy, RPC de Helius de servidor, wallet del operador, fee wallet)
-- [ ] Contenido de `.env` y `.env.mainnet` del frontend
-- [ ] Cuenta de Backblaze B2 (o similar) para los backups
-- [ ] Confirmación de que el **wallet del operador está fondeado con SOL en mainnet**
-- [ ] Decidido si el rev-share de referidos va a estar activo (necesita `REFERRAL_PAYOUT_WALLET_ID`
-      y `REFERRAL_PAYOUT_ADDRESS`; vacías → el claim responde 503)
+- [ ] The repository URL **in SSH format** (`git@github.com:user/repo.git`) and access to add a
+      *deploy key* to it (Settings → Deploy keys)
+- [ ] The domain to use (e.g. `battlearena.tld`) and a **Cloudflare account** with that domain added
+- [ ] The `oracle_key.json` file from the current machine
+- [ ] The contents of `backend/.env` (Privy secrets, server Helius RPC, operator wallet, fee wallet)
+- [ ] The contents of the frontend's `.env` and `.env.mainnet`
+- [ ] A Backblaze B2 (or similar) account for backups
+- [ ] Confirmation that the **operator wallet is funded with mainnet SOL**
+- [ ] A decision on whether the referral revenue share will be active (it needs
+      `REFERRAL_PAYOUT_WALLET_ID` and `REFERRAL_PAYOUT_ADDRESS`; empty → the claim responds 503)
 
 ---
 
-## Fase 0 — Acceso al repositorio
+## Phase 0: Repository access
 
-**Solo si el repo es privado, que es lo normal.** Va antes que todo lo demás porque sin esto la
-fase 1 aborta a mitad.
+**Only if the repo is private, which is the usual case.** It goes before everything else because
+without it phase 1 aborts halfway through.
 
-El clon y todos los despliegues posteriores los hace el usuario de sistema `battlearena`, no el
-tuyo: `deploy.sh` ejecuta `sudo -u battlearena -H git pull`. Ese usuario no hereda tus
-credenciales, así que necesita las suyas. Tener el repo clonado en tu home NO sirve.
+The clone and every later deploy are done by the `battlearena` system user, not yours: `deploy.sh`
+runs `sudo -u battlearena -H git pull`. That user doesn't inherit your credentials, so it needs its
+own. Having the repo cloned in your home does NOT help.
 
 ```bash
-# El usuario (lo mismo que hace el bootstrap; idempotente)
+# The user (same as the bootstrap does; idempotent)
 sudo adduser --system --group --home /srv/battlearena battlearena
 
-# Su propia clave, en SU home
+# Its own key, in ITS home
 sudo install -d -o battlearena -g battlearena -m 700 /srv/battlearena/.ssh
 sudo -u battlearena -H ssh-keygen -t ed25519 -N '' \
      -f /srv/battlearena/.ssh/id_ed25519 -C 'battlearena-minipc-deploy'
@@ -72,51 +72,51 @@ sudo -u battlearena -H bash -c 'ssh-keyscan -t ed25519 github.com >> ~/.ssh/know
 sudo cat /srv/battlearena/.ssh/id_ed25519.pub
 ```
 
-Esa pública se añade en el repo como **deploy key con "Allow write access" DESMARCADO**: solo
-lectura, solo este repo, y se revoca sin tocar la cuenta.
+That public key is added to the repo as a **deploy key with "Allow write access" UNCHECKED**:
+read-only, this repo only, and revocable without touching the account.
 
-**Comprobación — no sigas sin esto en verde:**
+**Check: don't continue until this is green:**
 
 ```bash
 sudo -u battlearena -H ssh -T git@github.com    # "Hi ...! You've successfully authenticated"
 ```
 
-> El `-H` de `sudo` no es opcional: sin él `HOME` sigue siendo `/root` y `ssh` buscaría la clave
-> en `/root/.ssh`. Los dos scripts lo llevan, por eso la clave va en `/srv/battlearena/.ssh`.
+> The `-H` in `sudo` isn't optional: without it `HOME` stays `/root` and `ssh` would look for the key
+> in `/root/.ssh`. Both scripts include it, which is why the key lives in `/srv/battlearena/.ssh`.
 
 ---
 
-## Fase 1 — Base del sistema
+## Phase 1: System base
 
 ```bash
-sudo REPO_URL=git@github.com:usuario/repo.git ~/battlearena-deploy/deploy/bootstrap-minipc.sh
+sudo REPO_URL=git@github.com:user/repo.git ~/battlearena-deploy/deploy/bootstrap-minipc.sh
 ```
 
-Clona `master`, no la rama por defecto del remoto (`BRANCH=otra` si algún día hace falta). No es un
-detalle: si el default del repo es otra rama, puede no traer ni `deploy/`, y `deploy.sh` se quedaría
-haciendo `pull --ff-only` sobre esa rama para siempre. Comprueba las dos cosas:
+It clones `master`, not the remote's default branch (`BRANCH=other` if ever needed). This isn't a
+detail: if the repo's default is another branch, it may not even include `deploy/`, and `deploy.sh`
+would keep running `pull --ff-only` on that branch forever. Check both things:
 
 ```bash
 sudo -u battlearena -H git -C /srv/battlearena branch --show-current   # "master"
 sudo -u battlearena -H git -C /srv/battlearena pull --ff-only          # "Already up to date."
 ```
 
-Instala paquetes, Node 20, Caddy, `cloudflared`, crea el usuario `battlearena`, clona el repo en
-`/srv/battlearena`, monta los dos venvs de Python, añade swap si hace falta, deja el Caddyfile de
-túnel en su sitio e instala las units de systemd **sin arrancarlas**. Es idempotente.
+It installs packages, Node 20, Caddy and `cloudflared`, creates the `battlearena` user, clones the
+repo into `/srv/battlearena`, sets up both Python venvs, adds swap if needed, puts the tunnel
+Caddyfile in place and installs the systemd units **without starting them**. It's idempotent.
 
-**Comprobación:** termina imprimiendo un bloque «lo que queda por hacer» y `caddy validate` pasa
-sin errores.
+**Check:** it finishes by printing a "what's left to do" block, and `caddy validate` passes with no
+errors.
 
-## Fase 2 — Clave del oráculo
+## Phase 2: Oracle key
 
-Desde la **máquina del usuario**, no desde aquí:
+From the **user's machine**, not from here:
 
 ```bash
-scp oracle/oracle_key.json usuario@mini-pc:/tmp/oracle_key.json
+scp oracle/oracle_key.json user@mini-pc:/tmp/oracle_key.json
 ```
 
-Y en el mini PC:
+And on the mini PC:
 
 ```bash
 sudo mv /tmp/oracle_key.json /var/lib/battlearena/oracle_key.json
@@ -124,22 +124,22 @@ sudo chown battlearena:battlearena /var/lib/battlearena/oracle_key.json
 sudo chmod 600 /var/lib/battlearena/oracle_key.json
 ```
 
-Va en `/var/lib` y no en `/etc` a propósito: `keys.py` hace `chmod` en cada carga y
-`ProtectSystem=strict` monta `/etc` en solo lectura → el servicio no arrancaría.
+It goes in `/var/lib` and not `/etc` on purpose: `keys.py` runs `chmod` on every load and
+`ProtectSystem=strict` mounts `/etc` read-only → the service wouldn't start.
 
-**Comprobación:** el usuario debe tener una copia de esta clave **fuera de esta máquina** (gestor
-de contraseñas). Pregúntaselo explícitamente antes de seguir.
+**Check:** the user must have a copy of this key **off this machine** (a password manager). Ask them
+explicitly before continuing.
 
-## Fase 3 — Variables de entorno
+## Phase 3: Environment variables
 
-Tres ficheros, todos a mano, todos `chmod 600` y de `battlearena`:
+Three files, all by hand, all `chmod 600` and owned by `battlearena`:
 
-**`/srv/battlearena/backend/.env`** — copia del actual, revisando:
+**`/srv/battlearena/backend/.env`**: a copy of the current one, reviewing:
 
 ```ini
 CORS_ORIGINS=["https://battlearena.tld"]
 DEV_ENDPOINTS_ENABLED=false
-SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=<key de SERVIDOR>
+SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=<SERVER key>
 PRIVY_APP_ID=...
 PRIVY_APP_SECRET=...
 PRIVY_OPERATOR_WALLET_ID=...
@@ -147,37 +147,37 @@ PRIVY_OPERATOR_ADDRESS=...
 FEE_WALLET_ADDRESS=...
 ```
 
-**`/srv/battlearena/.env`** — el del frontend. `VITE_ORACLE_PUBKEY` tiene que ser el de la clave
-de la fase 2.
+**`/srv/battlearena/.env`**: the frontend's. `VITE_ORACLE_PUBKEY` must be the one for the key from
+phase 2.
 
-**`/srv/battlearena/.env.mainnet`** — lo que cambia respecto al de desarrollo:
+**`/srv/battlearena/.env.mainnet`**: what changes compared to the development one:
 
 ```ini
 VITE_BACKEND_URL=https://battlearena.tld
 VITE_ORACLE_URL=https://battlearena.tld
 ```
 
-> Todo lo que empieza por `VITE_` acaba en el bundle del navegador. La key de Helius del frontend
-> es pública de facto: que el usuario la restrinja por dominio, y que use otra distinta (sin
-> `VITE_`) en el backend.
+> Everything starting with `VITE_` ends up in the browser bundle. The frontend's Helius key is
+> effectively public: have the user restrict it by domain, and use a different one (without `VITE_`)
+> in the backend.
 
 ```bash
 sudo chown battlearena:battlearena /srv/battlearena/{.env,.env.mainnet,backend/.env}
 sudo chmod 600 /srv/battlearena/{.env,.env.mainnet,backend/.env}
 ```
 
-## Fase 4 — Túnel de Cloudflare
+## Phase 4: Cloudflare Tunnel
 
-`cloudflared tunnel login` abre una URL. Si la máquina va sin escritorio, **cópiasela al usuario
-para que la abra en su navegador** y autorice el dominio.
+`cloudflared tunnel login` opens a URL. If the machine has no desktop, **copy it to the user so they
+open it in their browser** and authorize the domain.
 
 ```bash
 sudo cloudflared tunnel login
-sudo cloudflared tunnel create battlearena          # imprime el UUID
-sudo cloudflared tunnel route dns battlearena battlearena.tld   # crea el CNAME solo
+sudo cloudflared tunnel create battlearena          # prints the UUID
+sudo cloudflared tunnel route dns battlearena battlearena.tld   # creates the CNAME by itself
 
 sudo cp /srv/battlearena/deploy/cloudflared/config.yml.example /etc/cloudflared/config.yml
-# edita config.yml: sustituye TUNNEL_ID_AQUI (dos veces) y el hostname
+# edit config.yml: replace TUNNEL_ID_AQUI (twice) and the hostname
 sudo mv /root/.cloudflared/<UUID>.json /etc/cloudflared/
 sudo chmod 600 /etc/cloudflared/<UUID>.json
 
@@ -185,123 +185,126 @@ sudo cloudflared service install
 sudo systemctl enable --now cloudflared
 ```
 
-**Comprobación:** `systemctl status cloudflared` en verde y `cloudflared tunnel info battlearena`
-muestra una conexión activa.
+**Check:** `systemctl status cloudflared` is green and `cloudflared tunnel info battlearena` shows an
+active connection.
 
-En el panel de Cloudflare, deja el registro **en modo proxy (nube naranja)** — con túnel es
-obligatorio, no opcional.
+In the Cloudflare dashboard, keep the record **in proxy mode (orange cloud)**: with a tunnel it's
+mandatory, not optional.
 
-## Fase 5 — Arrancar y compilar
+## Phase 5: Start and build
 
 ```bash
 sudo systemctl start battlearena-oracle battlearena-backend
 sudo DOMAIN=battlearena.tld /srv/battlearena/deploy/deploy.sh
 ```
 
-`DOMAIN` es obligatorio: el healthcheck del final lo consulta por HTTPS, y sin él el script aborta
-en vez de darte un «Deploy OK» que no ha comprobado tu instalación. Si el backup aún no tiene
-remoto de rclone, añade `RCLONE_REMOTE=` (vacío) para que se quede en copia local.
+`DOMAIN` is mandatory: the final healthcheck queries it over HTTPS, and without it the script aborts
+instead of giving you a "Deploy OK" that hasn't checked your installation. If the backup doesn't have
+an rclone remote yet, add `RCLONE_REMOTE=` (empty) so it keeps a local copy.
 
-`deploy.sh` hace backup, `git pull`, dependencias, build del frontend en `dist.new` con swap
-atómico, reinicia servicios y pasa un healthcheck.
+`deploy.sh` runs a backup, `git pull`, dependencies, a frontend build into `dist.new` with an atomic
+swap, restarts the services and runs a healthcheck.
 
-**Comprobación:** imprime `Deploy OK` y el pubkey del oráculo. Ese pubkey debe coincidir con el
-`VITE_ORACLE_PUBKEY` de la fase 3 — si no, el frontend rechazará todas las atestaciones.
+**Check:** it prints `Deploy OK` and the oracle pubkey. That pubkey must match the
+`VITE_ORACLE_PUBKEY` from phase 3; otherwise the frontend will reject every attestation.
 
-## Fase 6 — Verificación completa
+## Phase 6: Full verification
 
 ```bash
 DOMAIN=battlearena.tld sudo /srv/battlearena/deploy/verify.sh
 ```
 
-Comprueba permisos de secretos, `DEV_ENDPOINTS_ENABLED`, CORS, wallet del operador, que solo hay
-un proceso de backend, salud local de ambos servicios, que el pubkey del oráculo cuadra con el
-compilado, la DB, el cron de backup, el remoto de rclone y, por el túnel, que `/health`,
-`/pubkey`, la SPA y el matcher de `Accept` en `/leaderboard` funcionan.
+It checks secret permissions, `DEV_ENDPOINTS_ENABLED`, CORS, the operator wallet, that there's only
+one backend process, local health of both services, that the oracle pubkey matches the built one,
+the DB, the backup cron, the rclone remote and, through the tunnel, that `/health`, `/pubkey`, the SPA
+and the `Accept` matcher on `/leaderboard` work.
 
-**No sigas hasta que salga todo en verde.**
+**Don't continue until everything is green.**
 
-## Fase 6.5 — Configuración que la base de mainnet NO trae hecha
+## Phase 6.5: Configuration the mainnet database does NOT come with
 
-La base de datos de mainnet nace vacía, y hay dos valores que en devnet están puestos y aquí no.
-Repásalos con el usuario antes de abrir:
+The mainnet database starts empty, and there are values that are set on devnet and not here. Go
+over them with the user before opening up:
 
-| Qué | Por qué importa |
+| What | Why it matters |
 |---|---|
-| `FEE_WALLET_ADDRESS` en `backend/.env` | Su valor por defecto está escrito en `config.py` y es **el mismo en devnet y en mainnet**. Sin ponerlo aquí, los ingresos reales caen en la wallet que se usa para probar. |
-| `BATTLE_FEE_PCT_PER_PLAYER` | Es el interruptor REAL de la fee (0 = no cobrar). Vaciar `FEE_WALLET_ADDRESS` NO la apaga: la manda al operador. |
-| SOL del operador | Paga el gas y la renta de TODAS las operaciones. Sin saldo, las partidas se anulan al llenarse el lobby. |
-| `backend/scripts/machines.py hide` | Ninguna máquina está apagada en esta base. |
-| `backend/scripts/flags.py on auto_royale` | El lobby de la casa arranca desactivado. El valor es `máquina[:plazas]`, de 5 a 10, y **las plazas mueven el precio de entrada**: `pokemon_25` son 70 USDC con 5 y 135 con 10. |
+| `FEE_WALLET_ADDRESS` in `backend/.env` | Its default is hardcoded in `config.py` and is **the same on devnet and mainnet**. Without setting it here, real revenue lands in the wallet used for testing. |
+| `BATTLE_FEE_PCT_PER_PLAYER` | This is the REAL fee switch (0 = don't charge). Emptying `FEE_WALLET_ADDRESS` does NOT turn it off: it sends the fee to the operator. |
+| Operator SOL | Pays gas and rent for ALL operations. Without balance, games are voided when the lobby fills up. |
+| `backend/scripts/machines.py hide` | No machine is disabled in this database. |
+| `backend/scripts/flags.py on auto_royale` | The house lobby starts disabled. The value is `machine[:seats]`, from 5 to 10, and **the seat count changes the entry price**: `pokemon_25` is 70 USDC with 5 and 135 with 10. |
 
-Los dos se lanzan desde `/srv/battlearena/backend` así:
+Both are run from `/srv/battlearena/backend` like this:
 
 ```bash
 sudo -u battlearena -H bash -c 'cd /srv/battlearena/backend && \
   APP_NETWORK=mainnet PYTHONPATH=. ./.venv/bin/python3 scripts/flags.py list'
 ```
 
-## Fase 7 — Backups y avisos
+## Phase 7: Backups and alerts
 
 ```bash
-sudo rclone config                     # crea el remoto B2
+sudo rclone config                     # create the B2 remote
 sudo crontab -e
 #   0 * * * * RCLONE_REMOTE=b2:battlearena-backups /srv/battlearena/deploy/backup.sh >> /var/log/battlearena-backup.log 2>&1
 ```
 
-Lánzalo una vez a mano y confirma con el usuario que el `.db.gz` aparece en el bucket.
+Run it once by hand and confirm with the user that the `.db.gz` shows up in the bucket.
 
-Añade monitorización externa (healthchecks.io o UptimeRobot) contra `https://battlearena.tld/health`.
-En una máquina en casa esto no es opcional: es la única forma de enterarte de una caída si no
-estás delante.
+Add external monitoring (healthchecks.io or UptimeRobot) against `https://battlearena.tld/health`. On
+a machine at home this isn't optional: it's the only way to find out about an outage when you're not
+in front of it.
 
-## Fase 8 — Resistencia física
+## Phase 8: Physical resilience
 
-- **BIOS: "Restore on AC power loss" = On.** Sin esto, tras un corte de luz el servicio no vuelve
-  hasta que alguien pulse el botón. Recuérdaselo al usuario: hay que reiniciar y entrar a la BIOS.
-- **UPS pequeño.** Aunque solo dé 10 minutos, evita el corte sucio con la SQLite escribiendo.
-- Si el usuario quiere cifrado de disco, avísale del conflicto: con LUKS la máquina se queda
-  esperando la contraseña tras un corte y no vuelve sola. Es una decisión suya, no un descuido.
+- **BIOS: "Restore on AC power loss" = On.** Without it, after a power cut the service doesn't come
+  back until someone presses the button. Remind the user: it requires rebooting into the BIOS.
+- **A small UPS.** Even if it only gives 10 minutes, it avoids a dirty shutdown while SQLite is
+  writing.
+- If the user wants disk encryption, warn them about the conflict: with LUKS the machine sits waiting
+  for the password after a power cut and doesn't come back on its own. It's their decision, not an
+  oversight.
 
-## Fase 9 — Prueba manual antes de abrir
+## Phase 9: Manual test before opening up
 
-En este orden, y con el usuario delante:
+In this order, and with the user present:
 
-1. Login con Privy **desde el móvil**, no solo desde el portátil.
-2. Chat abierto: debe conectar por `wss://` sin errores de contenido mixto en la consola.
-3. Abrir una carta del pool → pide `/attest` al oráculo. Si falla, el pubkey no cuadra.
-4. Una tirada de gacha pequeña con dinero real: comprobar que el NFT llega a la wallet.
-5. Solo entonces, abrir las batallas.
+1. Log in with Privy **from a phone**, not just the laptop.
+2. Chat open: it must connect over `wss://` with no mixed-content errors in the console.
+3. Open a card from the pool → it requests `/attest` from the oracle. If it fails, the pubkey doesn't
+   match.
+4. A small gacha pull with real money: check that the NFT reaches the wallet.
+5. Only then, open up battles.
 
-En el dashboard de Privy tiene que estar `https://battlearena.tld` en dominios permitidos y los
-*identity tokens* activados (User management → Authentication → Advanced), que es lo que usa el chat.
+The Privy dashboard must have `https://battlearena.tld` in its allowed domains and *identity tokens*
+enabled (User management → Authentication → Advanced), which is what the chat uses.
 
 ---
 
-## Fallos típicos y qué significan
+## Typical failures and what they mean
 
-| Síntoma | Causa |
+| Symptom | Cause |
 |---|---|
-| El frontend rechaza toda atestación | `VITE_ORACLE_PUBKEY` no coincide con `/pubkey`. Rebuild tras corregirlo (no basta reiniciar) |
-| `/leaderboard` devuelve JSON al recargar | El matcher `not header Accept *text/html*` del Caddyfile no está bien |
-| El oráculo devuelve 429 en cuanto hay gente | Falta `--proxy-headers`: todas las peticiones parecen venir de la misma IP |
-| El servicio del oráculo no arranca | La clave está en `/etc`; con `ProtectSystem=strict` el `chmod` de `keys.py` falla |
-| La SPA responde 403 y `/health` no | Caddy no puede atravesar `/srv/battlearena` (750 del `adduser --system`). Lo arregla `setfacl -m u:caddy:x /srv/battlearena`, que hace el bootstrap |
-| Caddy sirve su página de bienvenida | Se copió el Caddyfile pero no se recargó el servicio: `systemctl reload-or-restart caddy` |
-| `deploy.sh` muere en el primer paso con `didn't find section in config file` | `backup.sh` apunta a un remoto de rclone que no existe. Configúralo o pasa `RCLONE_REMOTE=` vacío |
-| Las batallas se anulan al llenarse el lobby | Wallet del operador sin SOL |
-| El chat se cae al minuto y medio | Revisa `connectTimeout` en `/etc/cloudflared/config.yml` |
-| `npm run build` muere sin mensaje | Sin RAM. `bootstrap-minipc.sh` añade swap solo si detecta menos de 4 GB |
+| The frontend rejects every attestation | `VITE_ORACLE_PUBKEY` doesn't match `/pubkey`. Rebuild after fixing it (a restart isn't enough) |
+| `/leaderboard` returns JSON on reload | The Caddyfile's `not header Accept *text/html*` matcher is wrong |
+| The oracle returns 429 as soon as people show up | `--proxy-headers` is missing: every request looks like it comes from the same IP |
+| The oracle service won't start | The key is in `/etc`; with `ProtectSystem=strict`, `keys.py`'s `chmod` fails |
+| The SPA responds 403 but `/health` doesn't | Caddy can't traverse `/srv/battlearena` (750 from `adduser --system`). Fixed by `setfacl -m u:caddy:x /srv/battlearena`, which the bootstrap does |
+| Caddy serves its welcome page | The Caddyfile was copied but the service wasn't reloaded: `systemctl reload-or-restart caddy` |
+| `deploy.sh` dies at the first step with `didn't find section in config file` | `backup.sh` points to an rclone remote that doesn't exist. Configure it or pass an empty `RCLONE_REMOTE=` |
+| Battles are voided when the lobby fills up | Operator wallet has no SOL |
+| The chat drops after a minute and a half | Check `connectTimeout` in `/etc/cloudflared/config.yml` |
+| `npm run build` dies with no message | Out of RAM. `bootstrap-minipc.sh` only adds swap if it detects less than 4 GB |
 
-## Día a día
+## Day to day
 
 ```bash
-sudo DOMAIN=battlearena.tld /srv/battlearena/deploy/deploy.sh   # desplegar la última versión
-journalctl -u battlearena-backend -f      # logs del backend
-journalctl -u cloudflared -f              # logs del túnel
-sudo DOMAIN=battlearena.tld /srv/battlearena/deploy/verify.sh   # tras cualquier cambio gordo
+sudo DOMAIN=battlearena.tld /srv/battlearena/deploy/deploy.sh   # deploy the latest version
+journalctl -u battlearena-backend -f      # backend logs
+journalctl -u cloudflared -f              # tunnel logs
+sudo DOMAIN=battlearena.tld /srv/battlearena/deploy/verify.sh   # after any big change
 ```
 
-Al arrancar, el backend ejecuta `_resume_orphaned_battles`: termina o anula y reembolsa las
-batallas que quedaron en `running`. Un reinicio no rompe la contabilidad, pero **mira antes si hay
-batallas en vuelo**.
+On startup, the backend runs `_resume_orphaned_battles`: it finishes, or voids and refunds, the
+battles left `running`. A restart doesn't break the accounting, but **check first whether there are
+battles in progress**.

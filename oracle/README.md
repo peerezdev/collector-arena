@@ -1,27 +1,33 @@
-# Battle Arena — Oráculo de pricing
+# Collector Arena: pricing oracle
 
-Servicio off-chain de la **Fase 1** que da valor a las cartas para el combate. Resuelve un `mint` de NFT de Collector Crypt → obtiene su **valor asegurado** y su **grade** → firma una **atestación ed25519** en el formato canónico EXACTO que verifica el programa Anchor. El cliente incrusta esa firma como instrucción Ed25519 en la transacción `initialize_battle`/`join_battle`, y el contrato la verifica por introspección.
+An off-chain **Phase 1** service that values cards for combat. It resolves a Collector Crypt NFT
+`mint` → gets its **insured value** and **grade** → signs an **ed25519 attestation** in the EXACT
+canonical format verified by the Anchor program. The client embeds that signature as an Ed25519
+instruction in the `initialize_battle`/`join_battle` transaction, and the contract verifies it through
+instruction introspection.
 
-**Estado:** MVP. Fuente de valor = solo `insuredValue` (mock para dev/tests, API real de Collector Crypt en producción). Sin dinero real.
+**Status:** MVP. Value source = `insuredValue` only (mock for dev/tests, the real Collector Crypt API
+in production). No real money.
 
-## Arranque
+## Getting started
 
 ```bash
 cd oracle
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-pytest -q                       # 24 tests, totalmente offline (HTTP mockeado)
+pytest -q                       # 24 tests, fully offline (HTTP mocked)
 
-# servidor (mock por defecto):
+# server (mock by default):
 uvicorn app.main:app --port 8787
-# fuente real:
+# real source:
 PRICING_SOURCE=collectorcrypt uvicorn app.main:app --port 8787
 ```
 
 ## Endpoints
 
 - `GET /health` → `{ "status": "ok" }`
-- `GET /pubkey` → `{ "oracle_pubkey": "<base58>" }` — la clave a registrar on-chain (campo `oracle` de `Battle`).
+- `GET /pubkey` → `{ "oracle_pubkey": "<base58>" }`: the key to register on-chain (the `oracle` field
+  of `Battle`).
 - `GET /attest?mint=<pubkey>&battle=<pubkey>` →
   ```json
   {
@@ -29,51 +35,72 @@ PRICING_SOURCE=collectorcrypt uvicorn app.main:app --port 8787
     "ts": 1700000000, "message_hex": "…", "signature_hex": "…", "oracle_pubkey": "<base58>"
   }
   ```
-  - **`battle` es obligatorio** (base58, debe decodificar a 32 bytes). La firma liga la atestación al PDA de batalla concreto, impidiendo reutilizarla en otra batalla (anti-replay).
-  - `409` si la carta no puede valorarse (sin `insuredValue` / sin grade / mint no encontrado). `422` si `mint` o `battle` no son pubkeys válidas (no decodifican a 32 bytes).
-  - El cliente construye la instrucción Ed25519 de la tx con `message_hex` + `signature_hex` + `oracle_pubkey`, con índices auto-referenciales `0xFFFF` (igual que en los tests litesvm del contrato), y la pone ANTES de la instrucción del programa, pasando `ed25519_ix_index`.
+  - **`battle` is required** (base58, must decode to 32 bytes). The signature binds the attestation to
+    a specific battle PDA, preventing reuse in another battle (anti-replay).
+  - `409` if the card can't be valued (no `insuredValue` / no grade / mint not found). `422` if `mint`
+    or `battle` aren't valid pubkeys (don't decode to 32 bytes).
+  - The client builds the transaction's Ed25519 instruction from `message_hex` + `signature_hex` +
+    `oracle_pubkey`, with self-referencing `0xFFFF` indexes (as in the contract's litesvm tests), and
+    places it BEFORE the program instruction, passing `ed25519_ix_index`.
 
-## Decisión de valor: solo `insuredValue` (resistente a manipulación)
+## Value decision: `insuredValue` only (manipulation resistant)
 
-El "poder" de una carta lo define **únicamente su valor asegurado** (`insuredValue` de Collector Crypt), fijado por un tercero. **No** se usa `listing.price` (lo fija el propio jugador → manipulable) ni la estimación PSA. Una carta sin `insuredValue` **no puede jugar** (se rechaza). Es el coste de que nadie pueda autoasignarse poder en un juego con apuestas. Hay un test explícito (`test_extract_no_fallback_to_listing_price`) que prueba que, aun habiendo precio de listado, sin `insuredValue` se rechaza.
+A card's "power" is defined **solely by its insured value** (Collector Crypt's `insuredValue`), set by
+a third party. `listing.price` is **not** used (the player sets it themselves → manipulable), nor the
+PSA estimate. A card without `insuredValue` **cannot play** (it's rejected). That's the price of
+making sure nobody can assign themselves power in a game with stakes. There is an explicit test
+(`test_extract_no_fallback_to_listing_price`) proving that, even when a listing price exists, a card
+without `insuredValue` is rejected.
 
-> `insuredValue` es la fuente **v1**, intercambiable luego por el motor de pricing cross-platform del SPEC (el "moat") sin tocar el resto del servicio.
+> `insuredValue` is the **v1** source, swappable later for the SPEC's cross-platform pricing engine
+> (the "moat") without touching the rest of the service.
 
-## Configuración (env / `.env`)
+## Configuration (env / `.env`)
 
-| Var | Default | Qué |
+| Var | Default | What |
 |---|---|---|
-| `PRICING_SOURCE` | `mock` | `mock` (determinista, dev/tests) o `collectorcrypt` (API real) |
-| `ORACLE_KEY_PATH` | `oracle_key.json` | semilla ed25519 (32 bytes hex). Se genera si no existe (**solo dev**). En producción, fuera del repo. |
-| `CC_BASE_URL` | `https://api.collectorcrypt.com` | API de Collector Crypt (pública, sin auth) |
-| `PRICING_CACHE_TTL` | `120` | TTL (s) de la caché por mint (respeta el WAF de CC) |
+| `PRICING_SOURCE` | `mock` | `mock` (deterministic, dev/tests) or `collectorcrypt` (real API) |
+| `ORACLE_KEY_PATH` | `oracle_key.json` | ed25519 seed (32 bytes hex). Generated if missing (**dev only**). In production, outside the repo. |
+| `CC_BASE_URL` | `https://api.collectorcrypt.com` | Collector Crypt API (public, no auth) |
+| `PRICING_CACHE_TTL` | `120` | Per-mint cache TTL in seconds (respects CC's WAF) |
 
-La clave del oráculo **nunca se commitea** (`.gitignore` cubre `oracle_key.json`, `.env`, `.venv`).
+The oracle key is **never committed** (`.gitignore` covers `oracle_key.json`, `.env`, `.venv`).
 
-## Fuente de datos (Collector Crypt)
+## Data source (Collector Crypt)
 
-`GET {CC_BASE_URL}/marketplace?search={mint}` (pública). Se filtra el item con `nftAddress == mint` exacto (la búsqueda es por subcadena) y se extrae `insuredValue` + `gradeNum` + `gradingCompany`. Mapeo tomado de la integración real en MarketAgg.
+`GET {CC_BASE_URL}/marketplace?search={mint}` (public). The item with an exact `nftAddress == mint`
+is selected (the search matches substrings) and `insuredValue` + `gradeNum` + `gradingCompany` are
+extracted. The field mapping was taken from the real integration in MarketAgg.
 
-## Garantía de no-desincronización con el contrato
+## Guarantee against drifting out of sync with the contract
 
-El mensaje canónico es `mint(32) || value_usd(8 LE u64) || grade(1) || ts(8 LE i64) || battle(32)` = **81 bytes** — idéntico a `attestation_msg` del contrato. El campo `battle` liga la firma al PDA de la batalla concreta (anti-replay). Un **vector de equivalencia compartido** (`tests/fixtures/attestation_vectors.json`) lo verifican **a la vez** el test Python (`test_shared_vector_matches`) y un test Rust del contrato (`shared_attestation_vector_matches`). Si alguien cambia el formato en un lado, ambos tests rompen.
+The canonical message is `mint(32) || value_usd(8 LE u64) || grade(1) || ts(8 LE i64) || battle(32)`
+= **81 bytes**, identical to the contract's `attestation_msg`. The `battle` field binds the signature
+to the specific battle PDA (anti-replay). A **shared equivalence vector**
+(`tests/fixtures/attestation_vectors.json`) is verified **at the same time** by the Python test
+(`test_shared_vector_matches`) and a Rust test in the contract (`shared_attestation_vector_matches`).
+If anyone changes the format on one side, both tests break.
 
-## Arquitectura
+## Architecture
 
 ```
 oracle/app/
-  main.py             # FastAPI: /health, /pubkey, /attest (factory create_app + build_default_app)
-  attestation.py      # build_message (canónico) + sign_attestation (ed25519)
-  keys.py             # keypair ed25519 (carga/genera/persiste)
-  config.py           # settings por env
+  main.py             # FastAPI: /health, /pubkey, /attest (create_app factory + build_default_app)
+  attestation.py      # build_message (canonical) + sign_attestation (ed25519)
+  keys.py             # ed25519 keypair (load/generate/persist)
+  config.py           # env-based settings
   pricing/
     base.py           # CardValue, PricingSource, parse_insured_value/parse_grade, ValueUnavailable
-    mock.py           # MockPricingSource (determinista)
-    collector_crypt.py# CollectorCryptSource (API real, solo insuredValue, caché TTL)
+    mock.py           # MockPricingSource (deterministic)
+    collector_crypt.py# CollectorCryptSource (real API, insuredValue only, TTL cache)
 ```
 
-## Riesgos / pendientes (pre-producción)
+## Risks / open items (pre-production)
 
-- **Disponibilidad = liveness**: si el oráculo cae, no se pueden crear batallas. Producción querrá redundancia / rotación de clave.
-- **Binding por batalla**: RESUELTO. El endpoint `/attest` exige el parámetro `battle` (PDA de la batalla) y lo incluye en el mensaje firmado, impidiendo el reuso de una atestación en otra batalla.
-- **Esquema CC**: el mapeo de campos está tomado de MarketAgg; conviene confirmarlo contra una respuesta real (el parser es tolerante a variantes de envoltorio).
+- **Availability = liveness**: if the oracle goes down, battles can't be created. Production will want
+  redundancy and key rotation.
+- **Per-battle binding**: RESOLVED. The `/attest` endpoint requires the `battle` parameter (the battle
+  PDA) and includes it in the signed message, preventing an attestation from being reused in another
+  battle.
+- **CC schema**: the field mapping comes from MarketAgg; it should be confirmed against a real
+  response (the parser tolerates wrapper variants).

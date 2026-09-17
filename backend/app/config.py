@@ -42,6 +42,16 @@ class Settings(BaseSettings):
     # / FEE_WALLET_ADDRESS
     battle_fee_pct_per_player: float = 0.005
     battle_fee_pct_cap: float = 0.03
+    # Claim del airdrop $CARDS de Collector Crypt. Vacías = apagado, que es el estado en
+    # devnet y en cualquier entorno sin configurar. La ronda se identifica por la dirección
+    # del distribuidor y no por un trimestre: el criterio con el que CC repartió no lo
+    # sabemos, y la única suposición que hicimos al respecto resultó falsa.
+    # env: CARDS_AIRDROP_FILE / _DISTRIBUTOR / _VAULT / _MINT / _ROUND
+    cards_airdrop_file: str = ""
+    cards_airdrop_distributor: str = ""
+    cards_airdrop_vault: str = ""
+    cards_airdrop_mint: str = ""
+    cards_airdrop_round: str = ""
     # Mínimo para que un referidor pueda reclamar su rev-share. Agrega el polvo de muchas
     # batallas en un solo pago: sin mínimo, cada claim costaría más en fees de red que el importe.
     referral_claim_min_base_units: int = 5_000_000  # $5; env: REFERRAL_CLAIM_MIN_BASE_UNITS
@@ -72,6 +82,11 @@ class Settings(BaseSettings):
     # withdraw. Sin un mínimo + rate-limit, un atacante haría miles de retiros de 1 unidad a
     # direcciones nuevas para drenar el SOL del operador (renta de ATA ~0.002 SOL c/u).
     min_withdraw_usdc: float = 1.0        # retiro mínimo (USDC); env: MIN_WITHDRAW_USDC
+    # Mismo mínimo pero para retirar CARDS (airdrop de Collector Crypt): aunque ese retiro no
+    # cobra comisión de plataforma —el CARDS nunca entró en la economía de la plataforma—, el
+    # operador SIGUE pagando la renta de la ATA destino en cada retiro, así que el mismo ataque
+    # de dust-a-direcciones-nuevas aplica igual y necesita su propio mínimo.
+    min_withdraw_cards: float = 1.0       # retiro mínimo (CARDS); env: MIN_WITHDRAW_CARDS
     withdraw_rate_limit: int = 5          # nº máx. de retiros por wallet y ventana
     withdraw_rate_window_s: float = 60.0  # ventana del rate-limit de retiros (segundos)
     # Tips entre jugadores. El mínimo existe por lo mismo que el del withdraw: si el destinatario
