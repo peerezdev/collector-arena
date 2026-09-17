@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 
@@ -26,9 +26,39 @@ def make_engine(database_url: str):
     # SingletonThreadPool, que no acepta estos parámetros y revienta con TypeError al construir el
     # engine: 348 tests en rojo por dimensionar un pool que ahí ni existe.
     if database_url.startswith("sqlite") and ":memory:" not in database_url:
-        return create_engine(database_url, connect_args=connect_args,
-                             pool_size=40, max_overflow=10)
+        motor = create_engine(database_url, connect_args=connect_args,
+                              pool_size=40, max_overflow=10)
+        _ajustar_sqlite(motor)
+        return motor
     return create_engine(database_url, connect_args=connect_args)
+
+
+def _ajustar_sqlite(motor) -> None:
+    """WAL y espera ante bloqueo, en cada conexión que se abra.
+
+    La base venía en `journal_mode=delete` y `busy_timeout=0`, que es la peor combinación posible
+    para lo que hace este servidor: un escritor bloquea a TODOS los lectores, y quien se encuentra
+    la base bloqueada falla EN EL ACTO en vez de esperar un momento.
+
+    Con el ingestor del EV tracker escribiendo cada cinco segundos sobre 283 MB, eso se tradujo en
+    `database is locked` por todas partes: 29 backups fallidos en un día —incluido el que hace el
+    despliegue antes de tocar nada, que por eso abortaba— y lecturas largas reventando a mitad.
+
+      · WAL: los lectores dejan de bloquear al escritor y viceversa. Es exactamente el caso de uso
+        para el que existe: un escritor constante y muchos lectores.
+      · busy_timeout=5000: ante un bloqueo se espera hasta 5 s en vez de rendirse al instante.
+        La mayoría de los choques duran milisegundos.
+
+    NO se toca `synchronous`. Bajarlo a NORMAL es lo que se suele hacer junto con WAL y acelera
+    las escrituras, pero abre una ventana de pérdida de las últimas transacciones ante un corte de
+    corriente — y esto es una base con dinero, en un mini PC que todavía no tiene SAI.
+    """
+    @event.listens_for(motor, "connect")
+    def _pragmas(conexion, _registro):  # noqa: ANN001
+        cur = conexion.cursor()
+        cur.execute("PRAGMA journal_mode=WAL")
+        cur.execute("PRAGMA busy_timeout=5000")
+        cur.close()
 
 
 def make_session_factory(engine):
