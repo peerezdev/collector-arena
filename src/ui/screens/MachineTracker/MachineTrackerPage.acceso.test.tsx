@@ -131,8 +131,9 @@ describe('MachineTrackerPage · when access cannot be checked, it invents nothin
     render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
     expect(await screen.findByText(/\$20 to go/i)).toBeTruthy()
 
-    // The purchase goes through, and the access refresh it triggers fails.
+    // The purchase goes through (duration, then confirm), and the refresh it triggers fails.
     await act(async () => { screen.getByRole('button', { name: /7 days/i }).click() })
+    await act(async () => { screen.getByRole('button', { name: /confirm and pay/i }).click() })
 
     // The figures on screen are still the real ones, not a wager of 0 over 100.
     expect(screen.queryByText(/\$100 to go/i)).toBeNull()

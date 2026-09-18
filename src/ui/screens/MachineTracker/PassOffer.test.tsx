@@ -1,12 +1,22 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 
-const mocks = vi.hoisted(() => ({ comprar: vi.fn() }))
+const mocks = vi.hoisted(() => ({ comprar: vi.fn(), saldo: vi.fn() }))
 vi.mock('../../../onchain/gachaClient', () => ({ buyTrackerPass: mocks.comprar }))
+vi.mock('../../../wallet/useUsdcBalance', () => ({ useUsdcBalance: () => mocks.saldo() }))
 
 import { PassOffer } from './PassOffer'
 
-beforeEach(() => mocks.comprar.mockReset())
+beforeEach(() => {
+  mocks.comprar.mockReset()
+  mocks.saldo.mockReturnValue({ usdc: 50, loading: false })
+})
+
+/** Buy the way a person does: pick the duration, then confirm. */
+function comprar(dias: 7 | 30) {
+  fireEvent.click(screen.getByRole('button', { name: new RegExp(`${dias} days`, 'i') }))
+  fireEvent.click(screen.getByRole('button', { name: /confirm and pay/i }))
+}
 
 describe('buying the pass, inside the gate', () => {
   it('with no prices configured, NOTHING is offered', () => {
@@ -38,7 +48,7 @@ describe('buying the pass, inside the gate', () => {
     mocks.comprar.mockResolvedValue({ pass_until: 1, days: 7, price_usdc: 10 })
     const onComprado = vi.fn()
     render(<PassOffer prices={{ '7': 10, '30': 30 }} token="t" onComprado={onComprado} />)
-    fireEvent.click(screen.getByRole('button', { name: /7 days/i }))
+    comprar(7)
     await waitFor(() => expect(onComprado).toHaveBeenCalled())
     expect(mocks.comprar).toHaveBeenCalledWith(7, 't')
   })
@@ -53,9 +63,10 @@ describe('buying the pass, inside the gate', () => {
     let resolver!: (v: unknown) => void
     mocks.comprar.mockReturnValue(new Promise((r) => { resolver = r }))
     render(<PassOffer prices={{ '7': 10, '30': 30 }} token="t" onComprado={() => {}} />)
-    const boton = screen.getByRole('button', { name: /7 days/i })
-    fireEvent.click(boton)
-    fireEvent.click(boton)
+    fireEvent.click(screen.getByRole('button', { name: /7 days/i }))
+    const confirmar = screen.getByRole('button', { name: /confirm and pay/i })
+    fireEvent.click(confirmar)
+    fireEvent.click(confirmar)
     expect(mocks.comprar).toHaveBeenCalledTimes(1)
     await act(async () => { resolver({ pass_until: 1, days: 7, price_usdc: 10 }) })
   })
@@ -69,19 +80,18 @@ describe('buying the pass, inside the gate', () => {
     mocks.comprar.mockResolvedValueOnce({ pass_until: 1, days: 7, price_usdc: 10 })
     const onComprado = vi.fn()
     render(<PassOffer prices={{ '7': 10, '30': 30 }} token="t" onComprado={onComprado} />)
-    const boton = screen.getByRole('button', { name: /7 days/i })
-    fireEvent.click(boton)
+    comprar(7)
     await waitFor(() => expect(onComprado).toHaveBeenCalledTimes(1))
-    // The gate stays mounted (nobody unmounted it): a second and third click must not charge again.
-    fireEvent.click(boton)
-    fireEvent.click(boton)
+    // The gate stays mounted (nobody unmounted it), so everything that can still be clicked is
+    // clicked again: the duration button (which now reads "Paying…") and the one in the dialog.
+    screen.getAllByRole('button').forEach((b) => fireEvent.click(b))
     expect(mocks.comprar).toHaveBeenCalledTimes(1)
   })
 
   it('with no balance, it says what needs to be done, not a generic error', async () => {
     mocks.comprar.mockRejectedValueOnce({ status: 402 })
     render(<PassOffer prices={{ '7': 10, '30': 30 }} token="t" onComprado={() => {}} />)
-    fireEvent.click(screen.getByRole('button', { name: /7 days/i }))
+    comprar(7)
     expect(await screen.findByText(/not enough usdc/i)).toBeTruthy()
   })
 
@@ -89,7 +99,7 @@ describe('buying the pass, inside the gate', () => {
     // They have the money: asking them to deposit would be insulting and would fix nothing.
     mocks.comprar.mockRejectedValueOnce({ status: 502 })
     render(<PassOffer prices={{ '7': 10, '30': 30 }} token="t" onComprado={() => {}} />)
-    fireEvent.click(screen.getByRole('button', { name: /7 days/i }))
+    comprar(7)
     expect(await screen.findByText(/try again/i)).toBeTruthy()
     expect(screen.queryByText(/deposit/i)).toBeNull()
   })
@@ -101,7 +111,7 @@ describe('buying the pass, inside the gate', () => {
   it('a purchase just started asks to wait a few seconds, not to write to support', async () => {
     mocks.comprar.mockRejectedValueOnce({ status: 409, message: 'tracker_pass_pending' })
     render(<PassOffer prices={{ '7': 10, '30': 30 }} token="t" onComprado={() => {}} />)
-    fireEvent.click(screen.getByRole('button', { name: /7 days/i }))
+    comprar(7)
     expect(await screen.findByText(/wait a few seconds/i)).toBeTruthy()
     expect(screen.queryByText(/contact support/i)).toBeNull()
   })
@@ -109,7 +119,7 @@ describe('buying the pass, inside the gate', () => {
   it('a stuck purchase asks to write to support, not to wait a few seconds', async () => {
     mocks.comprar.mockRejectedValueOnce({ status: 409, message: 'tracker_pass_pending_stuck' })
     render(<PassOffer prices={{ '7': 10, '30': 30 }} token="t" onComprado={() => {}} />)
-    fireEvent.click(screen.getByRole('button', { name: /7 days/i }))
+    comprar(7)
     expect(await screen.findByText(/contact support/i)).toBeTruthy()
     expect(screen.queryByText(/wait a few seconds/i)).toBeNull()
   })
@@ -117,7 +127,7 @@ describe('buying the pass, inside the gate', () => {
   it('too many attempts asks to wait', async () => {
     mocks.comprar.mockRejectedValueOnce({ status: 429 })
     render(<PassOffer prices={{ '7': 10, '30': 30 }} token="t" onComprado={() => {}} />)
-    fireEvent.click(screen.getByRole('button', { name: /7 days/i }))
+    comprar(7)
     expect(await screen.findByText(/too many attempts/i)).toBeTruthy()
   })
 
@@ -126,7 +136,90 @@ describe('buying the pass, inside the gate', () => {
     // race right when it gets disabled; a generic message is enough, not one per case.
     mocks.comprar.mockRejectedValueOnce({ status: 503 })
     render(<PassOffer prices={{ '7': 10, '30': 30 }} token="t" onComprado={() => {}} />)
-    fireEvent.click(screen.getByRole('button', { name: /7 days/i }))
+    comprar(7)
     expect(await screen.findByText(/available right now/i)).toBeTruthy()
+  })
+})
+
+describe('nothing gets charged without confirming first', () => {
+  it('picking a duration opens the confirmation and charges NOTHING', () => {
+    // Money left the wallet on a single click, with no way back. The duration button now only
+    // asks; the charge needs a second, deliberate act.
+    render(<PassOffer prices={{ '7': 6.99, '30': 19.99 }} token="t" onComprado={() => {}} />)
+    fireEvent.click(screen.getByRole('button', { name: /7 days/i }))
+
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    expect(mocks.comprar).not.toHaveBeenCalled()
+  })
+
+  it('the 30 day one also asks, and confirming charges THAT one', async () => {
+    mocks.comprar.mockResolvedValue({ pass_until: 1, days: 30, price_usdc: 19.99 })
+    render(<PassOffer prices={{ '7': 6.99, '30': 19.99 }} token="t" onComprado={() => {}} />)
+    comprar(30)
+    await waitFor(() => expect(mocks.comprar).toHaveBeenCalledWith(30, 't'))
+  })
+
+  it('the confirmation says what is charged, from where, and until when', () => {
+    // Everything you need to decide, without leaving the dialog. The date is the one thing you
+    // cannot work out in your head.
+    render(<PassOffer prices={{ '7': 6.99, '30': 19.99 }} token="t" onComprado={() => {}} />)
+    fireEvent.click(screen.getByRole('button', { name: /7 days/i }))
+
+    const dialogo = screen.getByRole('dialog')
+    expect(dialogo.textContent).toMatch(/6\.99/)
+    expect(dialogo.textContent).toMatch(/7 days/i)
+    expect(dialogo.textContent).toMatch(/no refunds/i)
+    const hasta = new Date(Date.now() + 7 * 86400_000).toLocaleDateString()
+    expect(dialogo.textContent).toContain(hasta)
+  })
+
+  it('it shows the balance, which is the question you ask yourself before confirming', () => {
+    mocks.saldo.mockReturnValue({ usdc: 12.5, loading: false })
+    render(<PassOffer prices={{ '7': 6.99, '30': 19.99 }} token="t" onComprado={() => {}} />)
+    fireEvent.click(screen.getByRole('button', { name: /7 days/i }))
+    expect(screen.getByRole('dialog').textContent).toMatch(/12\.5/)
+  })
+
+  it('with not enough balance it says so and does not let you pay', () => {
+    // Better here than as a 402 from the backend after a round trip.
+    mocks.saldo.mockReturnValue({ usdc: 2, loading: false })
+    render(<PassOffer prices={{ '7': 6.99, '30': 19.99 }} token="t" onComprado={() => {}} />)
+    fireEvent.click(screen.getByRole('button', { name: /7 days/i }))
+
+    expect(screen.getByRole('dialog').textContent).toMatch(/not enough usdc/i)
+    expect(screen.getByRole('button', { name: /confirm and pay/i }).hasAttribute('disabled')).toBe(true)
+    expect(mocks.comprar).not.toHaveBeenCalled()
+  })
+
+  it('cancelling closes it and charges nothing', () => {
+    render(<PassOffer prices={{ '7': 6.99, '30': 19.99 }} token="t" onComprado={() => {}} />)
+    fireEvent.click(screen.getByRole('button', { name: /7 days/i }))
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }))
+
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(mocks.comprar).not.toHaveBeenCalled()
+  })
+
+  it('Escape closes it too, as long as nothing is being charged', () => {
+    render(<PassOffer prices={{ '7': 6.99, '30': 19.99 }} token="t" onComprado={() => {}} />)
+    fireEvent.click(screen.getByRole('button', { name: /7 days/i }))
+    fireEvent.keyDown(document, { key: 'Escape' })
+
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(mocks.comprar).not.toHaveBeenCalled()
+  })
+
+  it('once the charge is in flight, Escape does NOT close it', async () => {
+    // Closing mid-charge leaves you not knowing whether you paid, which is the worst moment to
+    // be left without a screen to read.
+    let resolver!: (v: unknown) => void
+    mocks.comprar.mockReturnValue(new Promise((r) => { resolver = r }))
+    render(<PassOffer prices={{ '7': 6.99, '30': 19.99 }} token="t" onComprado={() => {}} />)
+    comprar(7)
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.getByRole('dialog')).toBeTruthy()
+
+    await act(async () => { resolver({ pass_until: 1, days: 7, price_usdc: 6.99 }) })
   })
 })

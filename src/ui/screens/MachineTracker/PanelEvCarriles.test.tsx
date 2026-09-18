@@ -237,3 +237,49 @@ describe('PanelEv · a 403 on either lane leads to the gate', () => {
     expect(screen.queryByText(/to go/i)).toBeNull()
   })
 })
+
+describe('the pass says how long is left, not just a date', () => {
+  // This file runs on fake timers: `findBy*` would wait on a clock that is already intervened,
+  // so the screen is read after `avanzar`, like every other test here.
+  const conPase = (hasta: number) => {
+    mocks.fetchAcceso.mockResolvedValue({
+      allowed: true, wagered_usd: 0, required_usd: 100, missing_usd: 100, window_days: 7,
+      via: 'pass', pass_until: hasta, pass_prices: {},
+    })
+  }
+
+  it('shows the days left and the date it ends', async () => {
+    // A date on its own makes you count on your fingers. What you want to know is whether it is
+    // running out, and only then which day.
+    const dentroDe6Dias = Math.floor(Date.now() / 1000) + 6 * 86_400
+    conPase(dentroDe6Dias)
+    render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
+    await avanzar(0)
+
+    const etiqueta = screen.getByTitle(/pass/i)
+    expect(etiqueta.textContent).toMatch(/6 days left/i)
+    expect(etiqueta.textContent).toContain(new Date(dentroDe6Dias * 1000).toLocaleDateString())
+  })
+
+  it('on the last day it says hours, because days would round to zero', async () => {
+    conPase(Math.floor(Date.now() / 1000) + 5 * 3600)
+    render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
+    await avanzar(0)
+
+    expect(screen.getByTitle(/pass/i).textContent).toMatch(/5 hours left/i)
+  })
+
+  it('whoever got in by wagering is shown no date, because there is none to show', async () => {
+    // The wager window reopens the gate on its own when it stops being met: there is no date
+    // anybody can plan around, and inventing one would be a lie.
+    mocks.fetchAcceso.mockResolvedValue({
+      allowed: true, wagered_usd: 500, required_usd: 100, missing_usd: 0, window_days: 7,
+      via: 'wager', pass_until: null, pass_prices: {},
+    })
+    render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
+    await avanzar(0)
+
+    expect(screen.getByText('Elite Pokémon')).toBeTruthy()
+    expect(screen.queryByTitle(/pass/i)).toBeNull()
+  })
+})

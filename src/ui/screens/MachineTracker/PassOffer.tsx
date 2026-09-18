@@ -1,8 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { COLORS, FONTS } from '../../theme'
 import { buyTrackerPass } from '../../../onchain/gachaClient'
+import { useUsdcBalance } from '../../../wallet/useUsdcBalance'
 
 const DURACIONES = [7, 30] as const
+const DIA_MS = 86_400_000
 
 /** What to tell the player depending on how the charge failed. The different codes call for
  *  OPPOSITE reactions: with no balance they need to deposit; if the charge failed, the money is
@@ -49,6 +51,10 @@ export function PassOffer({ prices, token, onComprado }: {
   token: string | null
   onComprado: () => void
 }) {
+  // Which duration is waiting for confirmation. Money used to leave the wallet on a single
+  // click, with nothing in between and no way back: the duration button now only ASKS, and the
+  // charge needs a second, deliberate act.
+  const [confirmando, setConfirmando] = useState<7 | 30 | null>(null)
   const [cobrando, setCobrando] = useState<number | null>(null)
   // Once charged successfully, the whole block stays disabled FOREVER, without depending on
   // `onComprado()` (async, not awaited) finishing. Before, the `finally` re-enabled the buttons
@@ -98,7 +104,7 @@ export function PassOffer({ prices, token, onComprado }: {
             <button
               key={dias}
               type="button"
-              onClick={() => comprar(dias)}
+              onClick={() => { setError(null); setConfirmando(dias) }}
               disabled={cobrando !== null || comprado}
               style={{
                 flex: '1 1 140px', minHeight: 58, borderRadius: 12, cursor: 'pointer',
@@ -130,6 +136,138 @@ export function PassOffer({ prices, token, onComprado }: {
           100 USDC, you paid for something you already had. */}
       <div style={{ marginTop: 9, fontFamily: FONTS.mono, fontSize: 9.5, color: COLORS.muted }}>
         No refunds. Wagering still unlocks it for free.
+      </div>
+
+      {confirmando !== null && (
+        <Confirmacion
+          dias={confirmando}
+          precio={prices[String(confirmando)]}
+          cobrando={cobrando !== null}
+          onCancelar={() => setConfirmando(null)}
+          onConfirmar={() => comprar(confirmando)}
+        />
+      )}
+    </div>
+  )
+}
+
+/**
+ * The step between picking a duration and paying for it.
+ *
+ * It exists because the charge is irreversible and instant: USDC leaves the player's embedded
+ * wallet the moment they confirm, and there is no refund path. Everything needed to decide is
+ * in here, so nobody has to leave the dialog to check: what is bought, what it costs, what the
+ * balance is, and the end date, which is the one thing that cannot be worked out in your head.
+ *
+ * While the charge is in flight the dialog does NOT close, not with Escape and not by clicking
+ * outside. Closing it mid-charge would leave the player without the one screen that can tell
+ * them whether they paid.
+ */
+function Confirmacion({ dias, precio, cobrando, onCancelar, onConfirmar }: {
+  dias: 7 | 30
+  precio: number
+  cobrando: boolean
+  onCancelar: () => void
+  onConfirmar: () => void
+}) {
+  const { usdc } = useUsdcBalance()
+  // `usdc` is null while it is not known (no session, or a failed read). Unknown is NOT treated
+  // as "not enough": the backend is the one that decides with a 402, and blocking the button over
+  // a balance that could not be read would be inventing a reason to refuse.
+  const sinSaldo = usdc !== null && usdc < precio
+  const hasta = new Date(Date.now() + dias * DIA_MS)
+
+  useEffect(() => {
+    function alPulsar(e: KeyboardEvent) {
+      if (e.key === 'Escape' && !cobrando) onCancelar()
+    }
+    document.addEventListener('keydown', alPulsar)
+    return () => document.removeEventListener('keydown', alPulsar)
+  }, [cobrando, onCancelar])
+
+  return (
+    <div
+      onClick={() => { if (!cobrando) onCancelar() }}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 60, display: 'grid', placeItems: 'center',
+        padding: 16, background: 'rgba(6,8,11,.72)', backdropFilter: 'blur(4px)',
+      }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Confirm your ${dias} day pass`}
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: 380, maxWidth: '100%', borderRadius: 16, padding: 20,
+          background: COLORS.panel, border: `1px solid ${COLORS.border}`,
+          boxShadow: '0 30px 80px rgba(0,0,0,.7)',
+        }}
+      >
+        <div style={{ fontFamily: FONTS.mono, fontSize: 9, letterSpacing: '.22em', color: COLORS.muted }}>
+          CONFIRM YOUR PASS
+        </div>
+        <h3 style={{ margin: '8px 0 0', fontFamily: FONTS.display, fontSize: 20, color: COLORS.text }}>
+          {dias} days · ${precio}
+        </h3>
+
+        <dl style={{
+          margin: '16px 0 0', display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '7px 12px',
+          fontFamily: FONTS.mono, fontSize: 11, color: COLORS.muted,
+        }}>
+          <dt>Charged now</dt>
+          <dd style={{ margin: 0, textAlign: 'right', color: COLORS.text }}>${precio} USDC</dd>
+          <dt>Your balance</dt>
+          <dd style={{ margin: 0, textAlign: 'right', color: sinSaldo ? '#ff6ba4' : COLORS.text }}>
+            {usdc === null ? '—' : `$${usdc}`}
+          </dd>
+          <dt>Access until</dt>
+          <dd style={{ margin: 0, textAlign: 'right', color: COLORS.text }}>
+            {hasta.toLocaleDateString()}
+          </dd>
+        </dl>
+
+        <p style={{ margin: '14px 0 0', fontFamily: FONTS.mono, fontSize: 9.5, lineHeight: 1.6, color: COLORS.muted }}>
+          Paid from your wallet balance. No refunds, and wagering {' '}
+          {/* Same warning as outside, because this is the last screen before the money moves. */}
+          still unlocks it for free.
+        </p>
+
+        {sinSaldo && (
+          <p style={{ margin: '10px 0 0', fontFamily: FONTS.mono, fontSize: 10, color: '#ff6ba4' }}>
+            Not enough USDC. Deposit and come back.
+          </p>
+        )}
+
+        <div style={{ display: 'flex', gap: 9, marginTop: 18 }}>
+          <button
+            type="button"
+            onClick={onCancelar}
+            disabled={cobrando}
+            style={{
+              flex: '0 0 auto', minHeight: 42, padding: '0 16px', borderRadius: 11,
+              border: `1px solid ${COLORS.border}`, background: 'transparent', color: COLORS.muted,
+              fontFamily: FONTS.display, fontWeight: 700, fontSize: 13,
+              cursor: cobrando ? 'default' : 'pointer', opacity: cobrando ? 0.5 : 1,
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirmar}
+            disabled={cobrando || sinSaldo}
+            style={{
+              flex: 1, minHeight: 42, borderRadius: 11, border: 'none',
+              background: 'linear-gradient(135deg,#ff2e7e,#3ce8a8)', color: '#06120c',
+              fontFamily: FONTS.display, fontWeight: 800, fontSize: 13.5,
+              cursor: cobrando || sinSaldo ? 'default' : 'pointer',
+              opacity: cobrando || sinSaldo ? 0.6 : 1,
+            }}
+          >
+            {cobrando ? 'Paying…' : 'Confirm and pay'}
+          </button>
+        </div>
       </div>
     </div>
   )

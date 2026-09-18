@@ -285,9 +285,7 @@ function PanelEv({ token, acceso, onSinAcceso }: {
             fixed date. Whoever bought a pass does have a date, and it is the only one they can
             plan around. */}
         {acceso?.via === 'pass' && acceso.pass_until && (
-          <span style={{ fontFamily: FONTS.mono, fontSize: 10, color: COLORS.muted }}>
-            PASS UNTIL {new Date(acceso.pass_until * 1000).toLocaleDateString()}
-          </span>
+          <EtiquetaPase hasta={acceso.pass_until} ahoraSeg={ahoraSeg} />
         )}
         {/* Las dos lecturas de la MISMA medición. Se ofrece elegir porque las dos son ciertas: el
             coleccionista se queda las cartas buenas y el que juega por valor las revende. Sin este
@@ -408,5 +406,44 @@ function Aviso({ children }: { children: React.ReactNode }) {
     }}>
       {children}
     </div>
+  )
+}
+
+/**
+ * How much of the pass is left, in the tracker header.
+ *
+ * It leads with the time remaining and not with the date, because that is the question being
+ * asked: a date on its own makes you count on your fingers to find out whether it is running out.
+ * The date comes right after, which is what you plan around.
+ *
+ * Under a day it switches to hours: "0 days left" reads as expired when there is still an
+ * afternoon of it left. It turns amber at 2 days, which is when the figure stops being decoration
+ * and becomes a warning worth acting on.
+ */
+function EtiquetaPase({ hasta, ahoraSeg }: { hasta: number; ahoraSeg: number }) {
+  const quedan = hasta - ahoraSeg
+  const dias = Math.floor(quedan / 86_400)
+  const horas = Math.max(0, Math.floor(quedan / 3600))
+  const restante = dias >= 1 ? `${dias} day${dias === 1 ? '' : 's'} left`
+                             : `${horas} hour${horas === 1 ? '' : 's'} left`
+  const acabando = quedan <= 2 * 86_400
+  const color = acabando ? '#ffd166' : COLORS.muted
+
+  return (
+    <span
+      title="Machine Tracker pass"
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 6,
+        padding: '3px 9px', borderRadius: 999,
+        border: `1px solid ${acabando ? '#ffd16659' : COLORS.border}`,
+        background: acabando ? '#ffd1661a' : '#ffffff08',
+        fontFamily: FONTS.mono, fontSize: 9.5, letterSpacing: '.08em', color,
+      }}
+    >
+      PASS · {restante}
+      <span style={{ color: COLORS.muted }}>
+        until {new Date(hasta * 1000).toLocaleDateString()}
+      </span>
+    </span>
   )
 }
