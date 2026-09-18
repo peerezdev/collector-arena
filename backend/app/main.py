@@ -1112,7 +1112,10 @@ def create_app(session_factory, chain: ChainSource,
             # The last good measurement is served WITH ITS TIMESTAMP, without pretending it was
             # just taken: the screen compares that stamp against the clock and marks it STALE
             # after five minutes.
-            if _ev_cache["filas"]:
+            # Only for 48 h: that is the only window the cache is ever written for (see the
+            # bottom of this handler), so serving it for any other `hours` would answer a question
+            # nobody asked, with no way for the caller to tell.
+            if _ev_cache["filas"] and hours == 48:
                 logger.warning("gacha/ev: CC is not answering (%s); serving the measurement from "
                                "%.0f s ago",
                                e, ahora - _ev_cache["t"])
@@ -1767,6 +1770,15 @@ def create_app(session_factory, chain: ChainSource,
         try:
             await enviar_cobro(solana_rpc_url, firmada)
         except RuntimeError as e:
+            # One rejection means the opposite of the rest: "already been processed" (-32002) says
+            # that transaction is ALREADY on the chain, so the money DID move. Reading it as a
+            # rejection would close the row as `failed` while the charge stands, and release the
+            # lock, so the retry that normally follows a 502 would charge a second pass. It is
+            # left `pending` WITH its signature, which is the state that reconciles itself.
+            if "already been processed" in str(e).lower():
+                logger.critical("tracker-pass: the RPC says the charge for %s was ALREADY "
+                                "processed, signature %s: left pending to reconcile", wallet, firma)
+                raise HTTPException(502, "charge failed") from e
             # The RPC refused `sendTransaction` explicitly (an `error` in the response): it said
             # it does NOT accept it, so the money did not move and the row can be closed as
             # `failed`, which also releases the lock and allows an immediate retry.

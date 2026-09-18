@@ -35,17 +35,27 @@ export function MachineTrackerPage() {
   // its `.then` lands last and overwrites the good access with a closed gate. With the counter,
   // only the response of the MOST RECENT request can touch the state; any other is discarded.
   const ultimaPeticion = useRef(0)
+  const [falloAcceso, setFalloAcceso] = useState(false)
   const pedirAcceso = useRef(() => {})
   pedirAcceso.current = () => {
     const id = ++ultimaPeticion.current
     fetchTrackerAccess(identityToken)
-      .then((a) => { if (ultimaPeticion.current === id) setAcceso(a) })
-      // Si no se puede preguntar, NO se abre: una puerta que se cae abierta ante un fallo de red
-      // no es una puerta. Se deja el aviso con lo que se sabe, que es nada.
+      .then((a) => {
+        if (ultimaPeticion.current !== id) return
+        setAcceso(a)
+        setFalloAcceso(false)
+      })
+      // If it cannot be asked, it does NOT open: a gate that falls open on a network error is no
+      // gate. But it invents nothing either. It used to install a hardcoded access here (wagered
+      // 0, required 100, no prices), which told someone who had wagered 80 that they had wagered
+      // nothing, and made the pass offer vanish along with the prices. Worst of all right after
+      // paying: the refresh that follows the purchase fails, and whoever just paid gets the gate
+      // back saying "$100 to go", with the buy buttons already disabled and no way out but a
+      // reload. So the last known access is kept, and the failure is said out loud with a way to
+      // retry.
       .catch(() => {
         if (ultimaPeticion.current !== id) return
-        setAcceso({ allowed: false, wagered_usd: 0, required_usd: 100,
-                    missing_usd: 100, window_days: 7, via: null, pass_until: null, pass_prices: {} })
+        setFalloAcceso(true)
       })
   }
 
@@ -76,6 +86,33 @@ export function MachineTrackerPage() {
       {/* El explicador va con acceso o sin él: quien todavía no puede entrar merece saber qué es
           lo que le estamos pidiendo que se gane. */}
       <TrackerHelp />
+
+      {/* Access could not be checked. What sits below is still the last thing the server said, so
+          it is left alone: the failure is stated and a retry is offered, which is what whoever
+          just paid actually needs. */}
+      {falloAcceso && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+          padding: '12px 14px', borderRadius: 12,
+          border: '1px solid #ffd16659', background: '#ffd1661a',
+        }}>
+          <span style={{ fontSize: 13, color: COLORS.text }}>
+            Couldn&apos;t check your access. If you just paid, your pass is already active: this
+            only failed to refresh.
+          </span>
+          <button
+            type="button"
+            onClick={() => pedirAcceso.current()}
+            style={{
+              marginLeft: 'auto', minHeight: 34, padding: '0 14px', borderRadius: 9,
+              border: '1px solid #ffffff26', background: '#ffffff12', cursor: 'pointer',
+              fontFamily: FONTS.mono, fontSize: 11, letterSpacing: '.1em', color: COLORS.text,
+            }}
+          >
+            TRY AGAIN
+          </button>
+        </div>
+      )}
 
       {/* Mientras no se sabe, no se enseña ninguna de las dos cosas: enseñar el panel y quitarlo
           medio segundo después sería peor que esperar, y enseñar el aviso a quien sí tiene acceso
@@ -344,6 +381,7 @@ function PanelEv({ token, acceso, onSinAcceso }: {
                 fila={f}
                 nota={modo === 'cashout' && f.buyback_pct ? 'AT BUYBACK' : 'AT CARD VALUE'}
                 onArrastrar={() => { arrastrando.current = f.machine }}
+                onFinArrastre={() => { arrastrando.current = null }}
               />
             </div>
           ))}

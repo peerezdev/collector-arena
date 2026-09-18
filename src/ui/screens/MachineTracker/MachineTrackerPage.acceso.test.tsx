@@ -8,11 +8,13 @@ const mocks = vi.hoisted(() => ({
   fetchEv: vi.fn(),
   fetchEvLive: vi.fn(),
   identityToken: vi.fn(),
+  comprar: vi.fn(),
 }))
 vi.mock('../../../onchain/gachaClient', () => ({
   fetchTrackerAccess: mocks.fetchAcceso,
   fetchEvRows: mocks.fetchEv,
   fetchEvLive: mocks.fetchEvLive,
+  buyTrackerPass: mocks.comprar,
 }))
 vi.mock('@privy-io/react-auth', () => ({ useIdentityToken: () => ({ identityToken: mocks.identityToken() }) }))
 
@@ -93,5 +95,48 @@ describe('MachineTrackerPage · access does not let itself be trampled by a stal
     await act(async () => { resolverSinToken(accesoCerrado) })
 
     expect(await screen.findByText(/to go/i)).toBeTruthy()
+  })
+})
+
+describe('MachineTrackerPage · when access cannot be checked, it invents nothing', () => {
+  it('a failure on the first load does not invent a wager of 0 over 100', async () => {
+    // The catch used to install a hardcoded access (wagered 0, required 100, no prices). Someone
+    // who had already wagered 80 was told, on a passing network error, that they had wagered
+    // nothing, and the pass offer vanished with it because the prices came back empty.
+    mocks.identityToken.mockReturnValue('tok')
+    mocks.fetchAcceso.mockRejectedValue(new Error('network'))
+
+    render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
+
+    expect(await screen.findByRole('button', { name: /try again/i })).toBeTruthy()
+    // No invented figures on screen.
+    expect(screen.queryByText(/to go/i)).toBeNull()
+    // And it does not fall open either: the panel is not shown.
+    expect(screen.queryByText(/No machines measured yet/i)).toBeNull()
+  })
+
+  it('after buying, a failed refresh does not tell the player they wagered nothing', async () => {
+    // The worst version of the same bug: whoever just paid got the gate back saying "$100 to go",
+    // with the buy buttons disabled and no way out other than reloading.
+    const casiDentro: TrackerAccess = {
+      allowed: false, wagered_usd: 80, required_usd: 100, missing_usd: 20, window_days: 7,
+      via: null, pass_until: null, pass_prices: { '7': 6.99 },
+    }
+    mocks.identityToken.mockReturnValue('tok')
+    mocks.fetchAcceso.mockResolvedValueOnce(casiDentro)
+                     .mockRejectedValue(new Error('network'))
+
+    mocks.comprar.mockResolvedValue({ pass_until: 999, days: 7, price_usdc: 6.99 })
+
+    render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
+    expect(await screen.findByText(/\$20 to go/i)).toBeTruthy()
+
+    // The purchase goes through, and the access refresh it triggers fails.
+    await act(async () => { screen.getByRole('button', { name: /7 days/i }).click() })
+
+    // The figures on screen are still the real ones, not a wager of 0 over 100.
+    expect(screen.queryByText(/\$100 to go/i)).toBeNull()
+    expect(screen.getByText(/\$20 to go/i)).toBeTruthy()
+    expect(screen.getByRole('button', { name: /try again/i })).toBeTruthy()
   })
 })

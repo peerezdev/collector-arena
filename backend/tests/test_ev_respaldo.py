@@ -79,6 +79,38 @@ def _cc_caido(monkeypatch, error=None):
     monkeypatch.setattr(GachaService, "machines", _explota)
 
 
+def _reloj_adelantado(monkeypatch, sello, segundos=3600):
+    """Moves forward the clock `main` sees, which expires the 60 s cache of `/gacha/ev`.
+
+    `main._time` is replaced and not the global `time.time`, so httpx's clock and everyone else's
+    stay untouched during the request.
+    """
+    class RelojAdelantado:
+        @staticmethod
+        def time():
+            return sello + segundos
+    monkeypatch.setattr(main_mod, "_time", RelojAdelantado)
+
+
+def test_the_backup_is_only_served_for_the_window_it_was_measured_over(client, monkeypatch):
+    """The cache only ever holds 48 h, so it cannot answer for any other window.
+
+    It is written under `hours == 48` and only then, but the backup used to serve it whatever was
+    asked for. `/gacha/ev?hours=6` during an outage came back with 48 hours of pulls and nothing
+    in the response said so: the whole point of this tracker is that it does not misstate what it
+    measured.
+    """
+    _sembrar(client)
+    _cc_responde(monkeypatch)
+    sello = client.get("/gacha/ev").json()["updated_at"]
+
+    _cc_caido(monkeypatch)
+    _reloj_adelantado(monkeypatch, sello)
+    assert client.get("/gacha/ev?hours=6").status_code == 502
+    # And the 48 h one, which is what the cache does hold, still has its backup.
+    assert client.get("/gacha/ev").json()["stale"] is True
+
+
 def test_with_CC_down_it_serves_the_LAST_GOOD_one_instead_of_a_502(client, monkeypatch):
     """The case that used to break the whole screen."""
     _sembrar(client)
@@ -88,8 +120,8 @@ def test_with_CC_down_it_serves_the_LAST_GOOD_one_instead_of_a_502(client, monke
     assert primera.json()["rows"], "something measured is needed for there to be a backup"
 
     _cc_caido(monkeypatch)
-    # A different `hours` skips the 60 s cache, which is what was masking the problem.
-    r = client.get("/gacha/ev?hours=47")
+    _reloj_adelantado(monkeypatch, primera.json()["updated_at"])   # expires the 60 s cache
+    r = client.get("/gacha/ev")
     assert r.status_code == 200, r.text
     assert r.json()["rows"] == primera.json()["rows"]
 
@@ -113,14 +145,10 @@ def test_the_backup_keeps_ITS_OWN_time_and_does_not_pretend_to_be_freshly_measur
     _cc_responde(monkeypatch)
     sello = client.get("/gacha/ev").json()["updated_at"]
 
-    class RelojAdelantado:
-        @staticmethod
-        def time():
-            return sello + 3600          # one hour after the last good measurement
-    monkeypatch.setattr(main_mod, "_time", RelojAdelantado)
+    _reloj_adelantado(monkeypatch, sello)
 
     _cc_caido(monkeypatch)
-    cuerpo = client.get("/gacha/ev?hours=47").json()
+    cuerpo = client.get("/gacha/ev").json()
     assert cuerpo["updated_at"] == sello, "the backup must carry the time it was measured"
     assert cuerpo["updated_at"] < sello + 300, "and therefore the screen will mark it STALE"
 
@@ -129,10 +157,12 @@ def test_the_backup_is_marked_as_such(client, monkeypatch):
     """So as to be able to tell apart, in the log and in tests, a fresh measurement from one served as backup."""
     _sembrar(client)
     _cc_responde(monkeypatch)
+    sello = client.get("/gacha/ev").json()["updated_at"]
     assert client.get("/gacha/ev").json().get("stale") is not True
 
     _cc_caido(monkeypatch)
-    assert client.get("/gacha/ev?hours=47").json()["stale"] is True
+    _reloj_adelantado(monkeypatch, sello)                          # expires the 60 s cache
+    assert client.get("/gacha/ev").json()["stale"] is True
 
 
 def test_with_NOTHING_measured_yet_it_is_still_a_502(client, monkeypatch):
@@ -151,20 +181,24 @@ def test_the_gacha_turned_OFF_on_purpose_does_not_disguise_itself_as_a_backup(cl
     """
     _sembrar(client)
     _cc_responde(monkeypatch)
-    assert client.get("/gacha/ev").status_code == 200
+    r = client.get("/gacha/ev")
+    assert r.status_code == 200
 
     _cc_caido(monkeypatch, GachaDisabled("gacha_disabled"))
-    assert client.get("/gacha/ev?hours=47").status_code == 503
+    _reloj_adelantado(monkeypatch, r.json()["updated_at"])
+    assert client.get("/gacha/ev").status_code == 503
 
 
 def test_when_CC_comes_back_the_backup_stops_being_served(client, monkeypatch):
     """The backup is a bridge, not a destination."""
     _sembrar(client)
     _cc_responde(monkeypatch)
-    client.get("/gacha/ev")
+    sello = client.get("/gacha/ev").json()["updated_at"]
 
     _cc_caido(monkeypatch)
-    assert client.get("/gacha/ev?hours=47").json()["stale"] is True
+    _reloj_adelantado(monkeypatch, sello)
+    assert client.get("/gacha/ev").json()["stale"] is True
 
     _cc_responde(monkeypatch)
-    assert client.get("/gacha/ev?hours=46").json().get("stale") is not True
+    _reloj_adelantado(monkeypatch, sello, 7200)
+    assert client.get("/gacha/ev").json().get("stale") is not True

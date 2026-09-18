@@ -241,6 +241,23 @@ describe('PanelEv · dragging a card', () => {
     await waitFor(() => expect(enPantalla()).toEqual(['Elite Pokémon', 'Anime Pop']))
   })
 
+  it('a drag abandoned outside the grid does not arm the next stray drop', async () => {
+    // `dragend` fires whenever the drag ends, including when it is released outside the grid,
+    // and there is no `drop` in that case. The page was only clearing the dragged card inside
+    // `soltarSobre`, so the code stayed armed: the next foreign drop (a file, a text selection)
+    // found it and reordered with it, writing that to localStorage.
+    render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
+    await screen.findByRole('button', { name: /2 of 2 machines/i })
+
+    const tarjetas = screen.getAllByRole('article')
+    fireEvent.dragStart(tarjetas[0])
+    fireEvent.dragEnd(tarjetas[0])              // released outside: no drop happens
+
+    fireEvent.drop(tarjetas[1].parentElement as HTMLElement)
+    await waitFor(() => expect(enPantalla()).toEqual(['Elite Pokémon', 'Anime Pop']))
+    expect(localStorage.getItem('ba.evTracker.orden')).toBeNull()
+  })
+
   it('dropping without having dragged anything does not reorder', async () => {
     // A `drop` can arrive from outside the browser (a file, a text selection).
     render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)

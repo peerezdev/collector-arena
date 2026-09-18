@@ -364,6 +364,17 @@ def pase_construccion_revienta(pase_entorno):
 
 
 @pytest.fixture()
+def pase_envio_ya_procesado(pase_entorno):
+    # The RPC answers the send with "already been processed" (-32002). It arrives as the same
+    # RuntimeError as a rejection, but it means the OPPOSITE: that transaction is already on the
+    # chain, so the money DID move.
+    pase_entorno.mando["enviar"] = RuntimeError(
+        "sendTransaction failed: {'code': -32002, 'message': 'Transaction simulation failed: "
+        "This transaction has already been processed'}")
+    return pase_entorno
+
+
+@pytest.fixture()
 def pase_envio_rechazado(pase_entorno):
     # RuntimeError FROM THE SEND: the RPC explicitly rejected `sendTransaction` (see
     # nft_transfer.py). The money did not move (a rejection from THAT node, not an absolute

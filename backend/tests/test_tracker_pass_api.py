@@ -161,6 +161,26 @@ def test_a_REJECTED_send_gives_no_access_and_leaves_the_row_as_failed(pase_clien
     assert pase_client.mando["acceso_al_cobrar"] is False
 
 
+def test_an_ALREADY_PROCESSED_send_is_not_read_as_a_rejection(pase_client,
+                                                              pase_envio_ya_procesado):
+    """The one rejection that means the money DID move.
+
+    "This transaction has already been processed" reaches us as the same `RuntimeError` as a real
+    rejection, and closing the row as `failed` over it would be a double lie: it would say the
+    charge did not happen while the transaction sits on the chain, and it would release the lock,
+    so the retry that follows a 502 would charge a second pass.
+
+    It stays `pending` WITH its signature, which is the state that reconciles itself: the next
+    purchase by this wallet asks the chain and closes it.
+    """
+    r = pase_client.post("/gacha/tracker-pass", json={"days": 7}, headers=pase_client.hdrs)
+    assert r.status_code == 502
+    with pase_client.session_factory() as s:
+        p = s.scalars(select(TrackerPass)).one()
+        assert p.status == "pending", "it is on the chain: calling it failed would be a lie"
+        assert p.tx_signature, "and it is reconcilable because the signature is right there"
+
+
 def test_an_INDETERMINATE_send_leaves_the_row_pending_WITH_a_signature(pase_client,
                                                                 pase_envio_indeterminado):
     # A timeout, a proxy 5xx after resubmitting... we don't know whether the transaction went

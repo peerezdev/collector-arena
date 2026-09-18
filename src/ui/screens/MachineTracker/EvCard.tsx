@@ -19,11 +19,15 @@ import { ACENTO, acentoDe, afirma, colorRareza, fondoFila } from './evAcento'
  * muestra corta— el número se pinta en gris aunque sea malísimo. Un rojo fuerte sobre seis horas de
  * datos afirma algo que los datos no dicen.
  */
-export function EvCard({ fila, nota, onArrastrar }: {
+export function EvCard({ fila, nota, onArrastrar, onFinArrastre }: {
   fila: EvRow
   nota?: string
   /** Fires when the card starts being dragged. Without it the card cannot be repositioned. */
   onArrastrar?: () => void
+  /** Fires when the drag ends, drop or no drop. Whoever holds the dragged card clears it here:
+   *  a drag released outside the grid produces no `drop`, and leaving it set would arm the next
+   *  stray drop with a card nobody is holding any more. */
+  onFinArrastre?: () => void
 }) {
   const [arrastrable, setArrastrable] = useState(false)
   const estado = estadoDe(fila.realized_verdict)
@@ -51,7 +55,7 @@ export function EvCard({ fila, nota, onArrastrar }: {
       // `draggable`, selecting a number on the card would start a drag.
       draggable={arrastrable}
       onDragStart={onArrastrar}
-      onDragEnd={() => setArrastrable(false)}
+      onDragEnd={() => { setArrastrable(false); onFinArrastre?.() }}
     >
       <header style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
