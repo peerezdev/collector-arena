@@ -20,8 +20,15 @@ from sqlalchemy.pool import StaticPool
 from app import main as main_mod
 from app.db import init_db, make_session_factory
 from app.main import create_app
+from app.privy import PrivyVerifier
 from app.services.gacha import GachaService
+from tests.conftest import make_es256, privy_auth_headers
 from tests.test_chain_mock import MockChainSource
+
+# `/gacha/ev` stopped being public once the tracker started charging: what is tested here is that
+# concurrent requests share one computation, not access, so the test wallet gets in through the
+# whitelist (the house's path) and the client carries its token.
+WALLET = "8QDBKx8P3pxkRhiqyXFtYcPPf2CM1F5NiE5A8yjkgtm6"
 
 TARDANZA = 0.3
 
@@ -40,20 +47,24 @@ def _app(monkeypatch, contador):
         time.sleep(TARDANZA)
         return {"machine": code, "realized_edge_pct": 1.0}
 
+    priv = make_es256()
+    app_id = "app-test"
     app = create_app(sf, MockChainSource(),
                      gacha=GachaService(base_url="https://dev-gacha.example.com", api_key=""),
-                     solana_rpc_url="https://api.devnet.solana.com")
+                     solana_rpc_url="https://api.devnet.solana.com",
+                     privy=PrivyVerifier(app_id=app_id, key_resolver=lambda kid: priv.public_key()),
+                     tracker_access_allowlist={WALLET})
     monkeypatch.setattr(GachaService, "machines", lambda self: maquinas())
     monkeypatch.setattr(main_mod, "fila_ev", fila_lenta)
-    return app
+    return app, privy_auth_headers(priv, app_id, WALLET)
 
 
 @pytest.mark.asyncio
 async def test_diez_peticiones_a_la_vez_producen_un_solo_calculo(monkeypatch):
     contador = {"n": 0}
-    app = _app(monkeypatch, contador)
+    app, cabeceras = _app(monkeypatch, contador)
     transporte = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transporte, base_url="http://t") as c:
+    async with httpx.AsyncClient(transport=transporte, base_url="http://t", headers=cabeceras) as c:
         respuestas = await asyncio.gather(*[c.get("/gacha/ev", timeout=30) for _ in range(10)])
 
     assert all(r.status_code == 200 for r in respuestas)
@@ -66,9 +77,9 @@ async def test_diez_peticiones_a_la_vez_producen_un_solo_calculo(monkeypatch):
 async def test_todas_reciben_las_mismas_filas(monkeypatch):
     """Servir la copia anterior a quien llega tarde no puede significar servirle vacío."""
     contador = {"n": 0}
-    app = _app(monkeypatch, contador)
+    app, cabeceras = _app(monkeypatch, contador)
     transporte = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transporte, base_url="http://t") as c:
+    async with httpx.AsyncClient(transport=transporte, base_url="http://t", headers=cabeceras) as c:
         respuestas = await asyncio.gather(*[c.get("/gacha/ev", timeout=30) for _ in range(5)])
 
     for r in respuestas:
@@ -95,12 +106,12 @@ async def test_la_cache_se_sella_al_TERMINAR_no_al_empezar(monkeypatch):
         time.sleep(lento)
         return {"machine": code, "realized_edge_pct": 1.0}
 
-    app = _app(monkeypatch, contador)
+    app, cabeceras = _app(monkeypatch, contador)
     monkeypatch.setattr(main_mod, "fila_ev", fila_muy_lenta)
 
     t0 = time.time()
     transporte = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transporte, base_url="http://t") as c:
+    async with httpx.AsyncClient(transport=transporte, base_url="http://t", headers=cabeceras) as c:
         r = await c.get("/gacha/ev", timeout=30)
 
     sellado = r.json()["updated_at"]
