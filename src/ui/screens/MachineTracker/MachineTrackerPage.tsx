@@ -11,6 +11,7 @@ import { LENTO_MS, RAPIDO_MS, aplicarVivo } from './evVivo'
 import { TrackerGate } from './TrackerGate'
 import { TrackerHelp } from './TrackerHelp'
 import { estaRancio, horaActualizacion } from './actualizado'
+import { restantePase } from './restantePase'
 
 /**
  * El Machine Tracker: cuánto paga de verdad cada máquina del gacha.
@@ -416,16 +417,13 @@ function Aviso({ children }: { children: React.ReactNode }) {
  * asked: a date on its own makes you count on your fingers to find out whether it is running out.
  * The date comes right after, which is what you plan around.
  *
- * Under a day it switches to hours: "0 days left" reads as expired when there is still an
- * afternoon of it left. It turns amber at 2 days, which is when the figure stops being decoration
- * and becomes a warning worth acting on.
+ * On the last day it counts in hours, and in the last hour in minutes (see `restantePase`). It
+ * turns amber at 2 days, which is when the figure stops being decoration and becomes a warning
+ * worth acting on.
  */
 function EtiquetaPase({ hasta, ahoraSeg }: { hasta: number; ahoraSeg: number }) {
   const quedan = hasta - ahoraSeg
-  const dias = Math.floor(quedan / 86_400)
-  const horas = Math.max(0, Math.floor(quedan / 3600))
-  const restante = dias >= 1 ? `${dias} day${dias === 1 ? '' : 's'} left`
-                             : `${horas} hour${horas === 1 ? '' : 's'} left`
+  const restante = restantePase(quedan)
   const acabando = quedan <= 2 * 86_400
   const color = acabando ? '#ffd166' : COLORS.muted
 
