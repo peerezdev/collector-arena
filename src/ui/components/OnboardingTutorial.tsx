@@ -59,7 +59,7 @@ const STEPS: Step[] = [
   {
     icon: 'coin', kicker: 'STEP 4 · GIMMIGHOULS', accent: 'amber',
     title: 'Points for showing up',
-    body: 'You earn Gimmighouls just by playing: 0.5 per dollar in battles, 0.1 in gacha. They are not a currency and they never touch your odds. They track how much you have played and move you up the ranking.',
+    body: 'You earn Gimmighouls just by playing: 0.5 per dollar in battles, 0.01 in gacha. They are not a currency and they never touch your odds. They track how much you have played and move you up the ranking.',
     chips: [{ label: 'EARNED BY PLAYING', dot: 'amber' }, { label: 'FEEDS THE RANKING', dot: 'green' }],
   },
 ]

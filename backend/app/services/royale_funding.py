@@ -50,14 +50,50 @@ async def distribute_usdc(rpc_url, signer, escrow_wallet_id, escrow_address, pla
     return await submit_signed_tx(rpc_url, signed)
 
 
-async def collect_buyin(rpc_url, signer, player_wallet_id, player_address, operator_wallet_id,
-                        operator_address, escrow_address, usdc_mint, amount, blockhash) -> str:
-    # 2-signer: player = USDC authority, operator = fee-payer (player has no SOL).
+async def construir_y_firmar_cobro(signer, player_wallet_id, player_address, operator_wallet_id,
+                                   operator_address, escrow_address, usdc_mint, amount,
+                                   blockhash) -> str:
+    """The HALF of `collect_buyin` that has NOT sent anything to the network yet: build the
+    transaction and sign it. Returns the signed transaction in base64.
+
+    WHY IT IS SPLIT. Building can blow up (an address misspelled in the configuration, a
+    blockhash that cannot be parsed) and signing can blow up (Privy does not answer), and neither
+    of those failures has broadcast anything: they are entirely retryable. The caller can
+    therefore do all of this BEFORE writing to its database, so a failure here leaves no trace
+    that later needs cleaning up. What cannot be undone starts at `enviar_cobro`.
+
+    2-signer: the player is the USDC authority, the operator pays the fee (the player has no
+    SOL).
+    """
     tx = build_token_transfer(player_address, escrow_address, usdc_mint, blockhash,
                               amount=amount, decimals=6, fee_payer=operator_address)
     signed = await signer.sign_solana(player_wallet_id, tx)        # player authorizes the USDC move
     signed = await signer.sign_solana(operator_wallet_id, signed)  # operator pays the fee
+    return signed
+
+
+async def enviar_cobro(rpc_url, signed) -> str:
+    """The other half: broadcast the already-signed transaction. Returns its signature.
+
+    It is the line that separates what is retryable from what can no longer be undone: from the
+    `sendTransaction` POST onward, a network error does not mean it did not go through.
+    """
     return await submit_signed_tx(rpc_url, signed)
+
+
+async def collect_buyin(rpc_url, signer, player_wallet_id, player_address, operator_wallet_id,
+                        operator_address, escrow_address, usdc_mint, amount, blockhash) -> str:
+    """Charge a player's buy-in: build, sign and send, in a single call.
+
+    A thin wrapper over the two halves above, and on purpose: Pack Battle and Royale charge from
+    inside a state machine that has nowhere to store a transaction halfway through, so for them
+    "charge this" in a single step is still the right shape. Whoever needs to record the
+    signature before sending (the tracker pass purchase) calls the two separately.
+    """
+    signed = await construir_y_firmar_cobro(signer, player_wallet_id, player_address,
+                                            operator_wallet_id, operator_address, escrow_address,
+                                            usdc_mint, amount, blockhash)
+    return await enviar_cobro(rpc_url, signed)
 
 
 async def withdraw_usdc(rpc_url, signer, player_wallet_id, player_address, operator_wallet_id,

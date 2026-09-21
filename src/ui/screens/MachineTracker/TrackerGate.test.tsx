@@ -9,7 +9,8 @@ const pintar = (a: TrackerAccess) =>
   render(<MemoryRouter><TrackerGate acceso={a} /></MemoryRouter>)
 
 const acceso = (over: Partial<TrackerAccess> = {}): TrackerAccess => ({
-  allowed: false, wagered_usd: 60, required_usd: 100, missing_usd: 40, window_days: 7, ...over,
+  allowed: false, wagered_usd: 60, required_usd: 100, missing_usd: 40, window_days: 7,
+  via: null, pass_until: null, pass_prices: {}, ...over,
 })
 
 describe('el aviso del Machine Tracker', () => {
@@ -196,11 +197,15 @@ describe('MachineTrackerPage', () => {
   })
 
   it('si no se puede preguntar, la puerta se queda CERRADA', async () => {
-    // Una puerta que se cae abierta ante un fallo de red no es una puerta.
+    // Una puerta que se cae abierta ante un fallo de red no es una puerta. Lo que ya NO se hace
+    // es inventar la cifra: este test afirmaba "$100 to go" con un acceso fabricado en el
+    // `catch`, que le decía "no has apostado nada" a quien sí había apostado. Cerrada sigue
+    // estando: no se pide un solo dato al backend.
     mocks.fetchAcceso.mockRejectedValue(new Error('sin red'))
     render(<MemoryRouter><MachineTrackerPage /></MemoryRouter>)
     await dejarResolver()
-    expect(screen.getByText('$100 to go')).toBeTruthy()
+    expect(screen.queryByText(/to go/i)).toBeNull()
+    expect(screen.getByRole('button', { name: /try again/i })).toBeTruthy()
     expect(mocks.fetchEv).not.toHaveBeenCalled()
   })
 })

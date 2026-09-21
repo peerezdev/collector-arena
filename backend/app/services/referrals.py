@@ -45,15 +45,27 @@ def _get_or_create_user(session: Session, wallet: str) -> User:
 
 USDC = 1_000_000  # USDC base units per dollar (6 decimals)
 
+#: Decimals kept from a payout. Binary floating point cannot write 1.1, so 100 $ at 0.5 with a
+#: 10% boost gives 110.00000000000001 instead of 110. Truncating here leaves the counter at the
+#: number you would get by hand. Six decimals sit well below the smallest payout that can be
+#: earned (0.01 per dollar on 1 $ is 0.01), so nothing real gets lost.
+DECIMALES = 6
 
-def award_gimmighouls(session: Session, wallet: str, buyin_base_units: float, ratio: float | None = None) -> int:
+
+def award_gimmighouls(session: Session, wallet: str, buyin_base_units: float, ratio: float | None = None) -> float:
     """Credit a participant their loyalty points for a completed spend (settled battle or gacha open).
 
     `buyin_base_units` is the USDC amount in base units (6 decimals). base = (buyin / 1e6) * ratio, so
     the ratio is per-dollar (ratio defaults to the battles rate; gacha passes its own lower rate). If
-    the user has a valid referral code, they earn round(base * (1 + boost_pct)) and the referrer earns
-    round(base * referrer_pct) (credited to owner_wallet's User, or to ReferralCode.earned as a
-    fallback). Returns the amount credited to the user.
+    the user has a valid referral code, they earn base * (1 + boost_pct) and the referrer earns
+    base * referrer_pct (credited to owner_wallet's User, or to ReferralCode.earned as a fallback).
+    Returns the amount credited to the user.
+
+    What gets credited is DECIMALS. The counter used to be an integer, and with the gacha at 0.01
+    per dollar it stopped working: a 50 $ pack gives half a point, `round(0.5)` is 0, and the two
+    most played machines (the 25 and 50 $ ones) would have stopped paying anything while the help
+    text still promised 0.01 per dollar. Nothing gets overpaid either: the only thing trimmed is
+    binary noise, see `DECIMALES`.
     """
     if ratio is None:
         ratio = get_settings().gimmighoul_per_usdc
@@ -63,18 +75,19 @@ def award_gimmighouls(session: Session, wallet: str, buyin_base_units: float, ra
     code = get_referral_code(session, user.referred_by) if user.referred_by else None
 
     if code is not None:
-        user_amount = round(base * (1 + code.boost_pct))
-        referrer_cut = round(base * code.referrer_pct)
+        bruto = base * (1 + code.boost_pct)
+        referrer_cut = base * code.referrer_pct
         if referrer_cut > 0:
             if code.owner_wallet:
                 owner = _get_or_create_user(session, code.owner_wallet)
-                owner.gimmighouls += referrer_cut
+                owner.gimmighouls = round((owner.gimmighouls or 0.0) + referrer_cut, DECIMALES)
             else:
-                code.earned += referrer_cut
+                code.earned = round((code.earned or 0.0) + referrer_cut, DECIMALES)
     else:
-        user_amount = round(base)
+        bruto = base
 
-    user.gimmighouls += user_amount
+    user_amount = round(bruto, DECIMALES)
+    user.gimmighouls = round((user.gimmighouls or 0.0) + user_amount, DECIMALES)
     session.flush()
     return user_amount
 

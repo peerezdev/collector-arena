@@ -3,6 +3,7 @@ import { battleHref } from '../battle/battleHref'
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom'
 import { usePrivy, useIdentityToken } from '@privy-io/react-auth'
 import { COLORS, GRADIENT, FONTS, formatUsd, Z } from '../theme'
+import { fmtGimmighouls, fmtGimmighoulsCompacto } from '../gimmighouls'
 import { useUsdcBalance } from '../../wallet/useUsdcBalance'
 import { useReservedBalance, availableUsd } from '../../wallet/useReservedBalance'
 import { useProfile } from '../../hooks/useProfile'
@@ -39,13 +40,6 @@ import { usePendingPacksVersion } from '../screens/gacha/pendingPacksBus'
 
 const DOCK_KEY = 'ba.dockCollapsed'
 const ONBOARD_KEY = 'ba.onboarded'   // set once the first-visit tutorial is finished/skipped
-
-// Compact Gimmighoul count for the tight mobile header (262,500,000 → 262.5M).
-function fmtGh(n: number): string {
-  if (n >= 1e6) return `${+(n / 1e6).toFixed(1)}M`
-  if (n >= 1e3) return `${+(n / 1e3).toFixed(1)}k`
-  return String(n)
-}
 
 export function AppShell() {
   const { pathname } = useLocation()
@@ -336,7 +330,7 @@ export function AppShell() {
                 <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', lineHeight: 1.1 }}>
                   <span style={{ fontFamily: FONTS.mono, fontSize: 8.5, fontWeight: 700, letterSpacing: '.18em', color: COLORS.muted, paddingBottom: '1px' }}>GIMMIGHOULS</span>
                   <span style={{ fontFamily: FONTS.display, fontWeight: 800, fontSize: 15 }}>
-                    {gimmighouls != null ? gimmighouls.toLocaleString() : '—'}
+                    {gimmighouls != null ? fmtGimmighouls(gimmighouls) : '—'}
                   </span>
                 </div>
               </div>
@@ -351,7 +345,7 @@ export function AppShell() {
               <span style={{ width: 1, height: 12, background: 'rgba(255,255,255,.12)' }} />
               <img src="/gimmighoul.png" alt="" title="Gimmighouls" width={15} height={15} style={{ display: 'block' }} />
               <span style={{ fontSize: 13, fontWeight: 700 }}>
-                {gimmighouls != null ? fmtGh(gimmighouls) : '—'}
+                {gimmighouls != null ? fmtGimmighoulsCompacto(gimmighouls) : '—'}
               </span>
               <button
                 onClick={() => setDepositOpen(true)}

@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom'
 import { COLORS, FONTS, formatUsd } from '../../theme'
 import type { TrackerAccess } from '../../../onchain/gachaClient'
 import { FANTASMAS } from './trackerFantasmas'
+import { PassOffer } from './PassOffer'
 
 const VERDE = '#3ce8a8'
 const ROSA = '#ff2e7e'
@@ -20,7 +21,14 @@ const AMBAR = '#ffd166'
  *
  * NO se disfraza de error. No se ha roto nada y el jugador no ha hecho nada mal: le falta jugar.
  */
-export function TrackerGate({ acceso }: { acceso: TrackerAccess }) {
+export function TrackerGate({ acceso, token = null, onComprado = () => {} }: {
+  acceso: TrackerAccess
+  // Both have defaults: this gate's existing tests mount it without them, from before the pass
+  // could be bought, and they have no reason to know about the purchase to keep testing what they
+  // already tested. With no token, `PassOffer` is not offered (it is needed to charge).
+  token?: string | null
+  onComprado?: () => void
+}) {
   const hecho = acceso.required_usd > 0
     ? Math.min(1, acceso.wagered_usd / acceso.required_usd)
     : 1
@@ -131,6 +139,11 @@ export function TrackerGate({ acceso }: { acceso: TrackerAccess }) {
           >
             Find a match →
           </Link>
+
+          {/* The purchase goes HERE and not in some separate setting: this is the exact moment
+              someone feels the tool missing, right after reading how far they are from getting in
+              by playing. With no prices configured nothing is painted (see `PassOffer`). */}
+          <PassOffer prices={acceso.pass_prices} token={token} onComprado={onComprado} />
 
           <div style={{
             marginTop: 14, paddingTop: 14, borderTop: '1px solid #ffffff14',

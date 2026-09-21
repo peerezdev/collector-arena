@@ -69,7 +69,12 @@ def make_session_factory(engine):
 # new TABLES but never adds COLUMNS to pre-existing ones, so we guard each new column with
 # an ADD COLUMN that runs only when the column is missing. Extend this list when adding columns.
 _ENSURE_COLUMNS = [
-    ("users", "gimmighouls", "INTEGER NOT NULL DEFAULT 0"),
+    # DECIMAL, not integer: with the gacha at 0.01 per dollar, a 50 $ pack is worth half a point,
+    # and rounding used to leave it at zero right on the two most played machines. Databases that
+    # already exist do NOT need a migration: SQLite types by affinity, and a column declared
+    # INTEGER stores 0.5 as is (checked: `typeof` returns `real`), because it only converts to an
+    # integer when nothing is lost. The FLOAT is for the ones created from now on.
+    ("users", "gimmighouls", "FLOAT NOT NULL DEFAULT 0"),
     ("users", "referred_by", "VARCHAR"),
     ("users", "withdraw_address", "VARCHAR"),
     ("users", "emote_slots", "VARCHAR"),
@@ -123,6 +128,21 @@ _ENSURE_INDEXES = [
     # el de wallet, así que va aquí también. Único, igual que en el modelo.
     ("users", "ux_users_alias_lower",
      "CREATE UNIQUE INDEX IF NOT EXISTS ux_users_alias_lower ON users (lower(alias))"),
+    # The tracker access gate asks "does this wallet have an active pass that has not expired?"
+    # on every load. Without this composite index it would be a SCAN of the whole tracker_passes.
+    ("tracker_passes", "ix_tracker_passes_wallet_status_ends",
+     "CREATE INDEX IF NOT EXISTS ix_tracker_passes_wallet_status_ends "
+     "ON tracker_passes (wallet, status, ends_at)"),
+    # Two purchase requests at once from the same wallet cannot charge twice. The endpoint
+    # already checks "is there a pending one?" before inserting, but that is a check-then-act:
+    # between the SELECT and the INSERT there is room for a second request to pass the same
+    # check. This index is the atomic part of that guarantee; without it, the app's check is
+    # only a suggestion. Partial (`WHERE status = 'pending'`) on purpose: a wallet accumulates
+    # many `active`/`failed` rows in its history, and can only have ONE purchase midway at a
+    # time.
+    ("tracker_passes", "uq_tracker_passes_pending_wallet",
+     "CREATE UNIQUE INDEX IF NOT EXISTS uq_tracker_passes_pending_wallet "
+     "ON tracker_passes (wallet) WHERE status = 'pending'"),
 ]
 
 

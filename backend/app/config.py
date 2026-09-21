@@ -1,5 +1,5 @@
 import os
-from typing import List
+from typing import List, Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     # sobres en solitario. Si se cambia cualquiera de los dos, hay que tocar también lo que se le
     # promete al jugador en src/ui/screens/Help/helpContent.ts y OnboardingTutorial.tsx, que
     # llevan las cifras escritas a mano.
-    gimmighoul_per_usdc_gacha: float = 0.1  # env: GIMMIGHOUL_PER_USDC_GACHA
+    gimmighoul_per_usdc_gacha: float = 0.01  # env: GIMMIGHOUL_PER_USDC_GACHA
     # Platform fee on battles: pct per player over the buyback value of the winner's loot,
     # capped at battle_fee_pct_cap total. Collected in USDC from the winner's wallet after
     # settle. fee_wallet_address empty → falls back to privy_operator_address; both empty →
@@ -123,6 +123,17 @@ class Settings(BaseSettings):
     # y no hay ninguna vía por la que un jugador se añada solo. env: TRACKER_ACCESS_ALLOWLIST
     tracker_access_allowlist: str = ""
 
+    # Machine Tracker paid pass, the alternative path to the 100 USDC wager.
+    # ZERO TURNS THE PURCHASE OFF, same as an empty `gacha_base_url` turns off the gacha: this way
+    # it can be deployed before the price has been decided, without offering anything half done.
+    tracker_pass_7d_usdc: float = 0.0      # env: TRACKER_PASS_7D_USDC
+    tracker_pass_30d_usdc: float = 0.0     # env: TRACKER_PASS_30D_USDC
+    # Rate limit on purchase requests, per wallet and window. Exists for the same reason as the
+    # withdraw one: every attempt moves real USDC and makes the operator pay gas (and, the first
+    # time, the destination ATA's rent). Its own counters, not shared with withdraw or tip.
+    tracker_pass_rate_limit: int = 5        # env: TRACKER_PASS_RATE_LIMIT
+    tracker_pass_rate_window_s: float = 60.0  # env: TRACKER_PASS_RATE_WINDOW_S
+
     @property
     def royale_creator_allowlist_set(self) -> set[str]:
         return {w.strip() for w in self.royale_creator_allowlist.split(",") if w.strip()}
@@ -130,6 +141,22 @@ class Settings(BaseSettings):
     @property
     def tracker_access_allowlist_set(self) -> set[str]:
         return {w.strip() for w in self.tracker_access_allowlist.split(",") if w.strip()}
+
+
+def avisar_precios_raros(s7: float, s30: float) -> Optional[str]:
+    """If the 30 day pass works out MORE EXPENSIVE per day than the 7 day one, returns the warning.
+
+    It is not an error that should prevent startup: the price is a business decision and maybe
+    someone wants it that way for a while. But it is a configuration mistake that, without this
+    warning, only the customer who does the math discovers, and by then they have already bought
+    the expensive one.
+    """
+    if s7 <= 0 or s30 <= 0:
+        return None                       # with the path off there is nothing to compare
+    if s30 / 30.0 > s7 / 7.0:
+        return (f"TRACKER_PASS_30D_USDC ({s30}) works out at {s30 / 30:.3f}/day, dearer than "
+                f"TRACKER_PASS_7D_USDC ({s7}) at {s7 / 7:.3f}/day")
+    return None
 
 
 def get_settings() -> Settings:

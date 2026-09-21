@@ -6,9 +6,13 @@ from solders.pubkey import Pubkey
 from solders.transaction import Transaction
 from solders.token.associated import get_associated_token_address
 
+from solders.keypair import Keypair
+
 from app.services.solana_tx import (
     build_nft_transfer,
     build_token_multi_transfer,
+    build_token_transfer,
+    leer_firma,
     TOKEN_PROGRAM,
     ATA_PROGRAM,
 )
@@ -22,6 +26,14 @@ MINT     = "So11111111111111111111111111111111111111112"   # wrapped SOL mint (v
 BLOCKHASH = "11111111111111111111111111111111"             # 32-zero-byte hash, always valid
 
 TOKEN_2022 = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+
+# Throwaway keys to be able to really SIGN in the `leer_firma` tests: without the private key
+# there is no way to fill in a signature slot, and with a fake signature it would not be possible
+# to tell "signed" apart from "unsigned", which is exactly what needs to be tested.
+OPERADOR = Keypair()
+OPERADOR_PUB = str(OPERADOR.pubkey())
+JUGADOR = Keypair()
+JUGADOR_PUB = str(JUGADOR.pubkey())
 
 
 @pytest.fixture()
@@ -227,3 +239,55 @@ class TestMultiTransferFeeSplit:
             dest_ata = get_associated_token_address(Pubkey.from_string(dest), Pubkey.from_string(MINT),
                                                     Pubkey.from_string(TOKEN_PROGRAM))
             assert dest_ata in keys
+
+
+# ---------------------------------------------------------------------------
+# leer_firma: the signature lives INSIDE the transaction, the RPC does not invent it
+# ---------------------------------------------------------------------------
+class TestLeerFirma:
+    """Being able to read the signature before sending is what allows recording in the database
+    "I'm about to send THIS transaction" BEFORE sending it. The only thing that needs guarding is
+    that it does not mistake an UNSIGNED transaction (whose slot is 64 zeros, which in base58
+    look like a perfectly presentable `1111…`) for a signed one."""
+
+    def _tx_sin_firmar(self):
+        # Mirrors the charge's: the player is the USDC authority and the operator pays the fee,
+        # so the transaction carries TWO signers and the one in slot 0 is the operator.
+        return build_token_transfer(JUGADOR_PUB, DEST, MINT, BLOCKHASH,
+                                    amount=10, decimals=6, fee_payer=OPERADOR_PUB)
+
+    def test_an_UNSIGNED_tx_does_not_pass_as_signed(self):
+        # The whole trap this helper guards against: `str(Signature.default())` is "1111…", a
+        # string that looks like a signature and that, saved to the database, would be
+        # impossible to reconcile with anything.
+        with pytest.raises(ValueError, match="is not signed"):
+            leer_firma(self._tx_sin_firmar())
+
+    def test_a_signed_tx_returns_ITS_signature(self):
+        tx = Transaction.from_bytes(base64.b64decode(self._tx_sin_firmar()))
+        tx.partial_sign([OPERADOR], tx.message.recent_blockhash)
+        firmada = base64.b64encode(bytes(tx)).decode()
+
+        firma = leer_firma(firmada)
+        assert firma == str(tx.signatures[0])
+        assert set(firma) != {"1"}, "not the all-zeros signature"
+        # And it is the FEE PAYER's, which is the one the RPC would return as the result of
+        # sendTransaction: `signatures[i]` corresponds to `account_keys[i]`, and `account_keys[0]`
+        # is whoever pays.
+        assert tx.message.account_keys[0] == OPERADOR.pubkey()
+
+    def test_signing_ONLY_with_the_other_signer_is_not_enough(self):
+        # The charge's transaction carries two signers: the player (USDC authority) and the
+        # operator (fee payer). If only the player signed, slot 0 would still be at zeros and
+        # the transaction would not be sendable: returning "a signature" there would be a lie.
+        tx = Transaction.from_bytes(base64.b64decode(self._tx_sin_firmar()))
+        tx.partial_sign([JUGADOR], tx.message.recent_blockhash)
+        with pytest.raises(ValueError, match="is not signed"):
+            leer_firma(base64.b64encode(bytes(tx)).decode())
+
+    def test_something_that_is_not_a_transaction_fails_clearly(self):
+        # If Privy returned garbage, an explicit ValueError is better than an IndexError from who
+        # knows where: the caller treats it as "the charge could not be prepared" and leaves no
+        # trace.
+        with pytest.raises(ValueError, match="could not parse"):
+            leer_firma("this-is-not-base64-of-a-tx")

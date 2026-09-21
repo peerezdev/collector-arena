@@ -15,7 +15,9 @@ class User(Base):
     alias: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     elo: Mapped[int] = mapped_column(Integer, default=1200)
     games_played: Mapped[int] = mapped_column(Integer, default=0)
-    gimmighouls: Mapped[int] = mapped_column(Integer, default=0)
+    #: Decimal on purpose: the gacha pays 0.01 per dollar, so awards are fractions of a point and
+    #: an integer counter would round them down to zero. See `award_gimmighouls`.
+    gimmighouls: Mapped[float] = mapped_column(Float, default=0.0)
     referred_by: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # ReferralCode.code
     withdraw_address: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # USDC payout destination
     emote_slots: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # JSON list of up to 3 quick-access emote codes
@@ -45,7 +47,7 @@ class ReferralCode(Base):
     # paga lo mismo.
     rake_share_pct: Mapped[float] = mapped_column(Float, default=0.25)
     owner_wallet: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # User to credit the cut to
-    earned: Mapped[int] = mapped_column(Integer, default=0)  # fallback tally when no owner_wallet
+    earned: Mapped[float] = mapped_column(Float, default=0.0)  # fallback tally when no owner_wallet
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
@@ -408,6 +410,39 @@ class GachaCoverage(Base):
     last_event_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     gaps: Mapped[Optional[str]] = mapped_column(String, nullable=True)   # JSON [[desde, hasta], …]
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class TrackerPass(Base):
+    """A paid Machine Tracker pass.
+
+    The ONLY stateful part of tracker access. The wager window is recomputed on every query and
+    stores nothing; see `tracker_access`. That boundary matters: if the pass ever gets
+    complicated, the wager never finds out.
+
+    `status` goes from `pending` to `active` or to `failed`, and ONLY `active` grants access. It
+    is inserted as `pending` BEFORE the charge is sent to the chain, and ALREADY carrying its
+    signature (see `tx_signature`), so a failed send gives away no access and still leaves
+    something concrete to reconcile.
+    """
+    __tablename__ = "tracker_passes"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    wallet: Mapped[str] = mapped_column(String, index=True)
+    days: Mapped[int] = mapped_column(Integer)
+    #: What was charged, frozen. If the price changes tomorrow, what was paid is not rewritten.
+    price_base_units: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String, default="pending")
+    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    #: The row is BORN with this column already filled in, not the other way around. The
+    #: signature of a Solana transaction travels INSIDE the signed transaction itself (the RPC
+    #: does not invent it), so it is read locally and the `pending` row is inserted with it
+    #: BEFORE anything is sent: a `pending` without a signature never exists. A `pending` with a
+    #: signature means "it was charged and we do not know whether it activated", not plainly "it
+    #: did not activate": `confirmar_firma` can return `None` instead of a verdict. That is what
+    #: makes the gap reconcilable: the same wallet's next purchase asks again on its own before
+    #: giving up (see `gacha_tracker_pass` in app/main.py).
+    tx_signature: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
 class AirdropClaim(Base):

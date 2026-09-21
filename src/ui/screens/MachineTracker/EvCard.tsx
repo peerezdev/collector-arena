@@ -1,3 +1,5 @@
+import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { COLORS, FONTS, formatUsd } from '../../theme'
 import type { EvRow } from '../../../onchain/gachaClient'
 import { RATIO_MAX, RATIO_MIN, anguloAguja, estadoDe, etiqueta, ratioDesdeEdge } from './evDial'
@@ -17,7 +19,17 @@ import { ACENTO, acentoDe, afirma, colorRareza, fondoFila } from './evAcento'
  * muestra corta— el número se pinta en gris aunque sea malísimo. Un rojo fuerte sobre seis horas de
  * datos afirma algo que los datos no dicen.
  */
-export function EvCard({ fila, nota }: { fila: EvRow; nota?: string }) {
+export function EvCard({ fila, nota, onArrastrar, onFinArrastre }: {
+  fila: EvRow
+  nota?: string
+  /** Fires when the card starts being dragged. Without it the card cannot be repositioned. */
+  onArrastrar?: () => void
+  /** Fires when the drag ends, drop or no drop. Whoever holds the dragged card clears it here:
+   *  a drag released outside the grid produces no `drop`, and leaving it set would arm the next
+   *  stray drop with a card nobody is holding any more. */
+  onFinArrastre?: () => void
+}) {
+  const [arrastrable, setArrastrable] = useState(false)
   const estado = estadoDe(fila.realized_verdict)
   const ratio = ratioDesdeEdge(fila.realized_edge_pct)
   const lab = etiqueta(estado, fila)
@@ -38,12 +50,33 @@ export function EvCard({ fila, nota }: { fila: EvRow; nota?: string }) {
       border: `1px solid ${confirmado ? `${acento}59` : COLORS.border}`,
       borderRadius: 16, boxShadow: '0 8px 24px #00000055',
       display: 'flex', flexDirection: 'column', overflow: 'hidden',
-    }}>
-      <header style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
-        padding: '13px 15px', borderBottom: '1px solid #ffffff12',
-        background: `linear-gradient(90deg,${acento}14,transparent 70%)`,
-      }}>
+    }}
+      // Draggable ONLY while the button went down on the header. If the article were always
+      // `draggable`, selecting a number on the card would start a drag.
+      draggable={arrastrable}
+      onDragStart={onArrastrar}
+      onDragEnd={() => { setArrastrable(false); onFinArrastre?.() }}
+      // Released anywhere on the card without dragging: disarm, or the next text selection in
+      // the body would turn into a drag.
+      onMouseUp={() => setArrastrable(false)}
+    >
+      {/* The whole header is the handle: name, price and buyback, not just the ⠿ glyph. It only
+          grabs when the screen knows how to reorder, so the card still works where there is no
+          order to touch.
+
+          `onMouseDown` turns `draggable` on and `onDragEnd` turns it off: that is what makes the
+          drag start HERE and not from any point of the card. The browser does not let you mark
+          only a child as draggable. */}
+      <header
+        title={onArrastrar ? 'Drag to reorder' : undefined}
+        onMouseDown={onArrastrar ? () => setArrastrable(true) : undefined}
+        style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+          padding: '13px 15px', borderBottom: '1px solid #ffffff12',
+          background: `linear-gradient(90deg,${acento}14,transparent 70%)`,
+          ...(onArrastrar && { cursor: 'grab', userSelect: 'none' }),
+        }}
+      >
         <span style={{ display: 'flex', alignItems: 'center', gap: 9, minWidth: 0 }}>
           {/* El punto del acento: la señal más rápida de la tarjeta. Se ve antes que el título. */}
           <span aria-hidden style={{
@@ -55,9 +88,20 @@ export function EvCard({ fila, nota }: { fila: EvRow; nota?: string }) {
             whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
           }}>{fila.name}</span>
         </span>
-        <span style={{ fontFamily: FONTS.mono, fontSize: 10, color: COLORS.muted, whiteSpace: 'nowrap', flex: 'none' }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 'none' }}>
+        <span style={{ fontFamily: FONTS.mono, fontSize: 10, color: COLORS.muted, whiteSpace: 'nowrap' }}>
           ${fila.pack_price}
           {fila.buyback_pct ? ` · bb ${Math.round(fila.buyback_pct * 100)}%` : ''}
+        </span>
+        {/* The glyph stays as the visible hint that the header can be grabbed. */}
+        {onArrastrar && (
+          <span
+            aria-hidden
+            style={{ color: '#5d6774', fontSize: 13, lineHeight: 1, padding: '2px 1px' }}
+          >
+            ⠿
+          </span>
+        )}
         </span>
       </header>
 
@@ -206,6 +250,20 @@ export function EvCard({ fila, nota }: { fila: EvRow; nota?: string }) {
             {lab.detalle}
           </div>
         )}
+        {/* From the conclusion to the pulls behind it. The card states the 48 hour summary; this
+            is what sits underneath, and it is the only way to check it. It leads to Winners with
+            the machine already filtered, which also stopped being in the side menu. */}
+        <Link
+          to={`/winners?machine=${encodeURIComponent(fila.machine)}`}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 5, marginTop: 11,
+            fontFamily: FONTS.mono, fontSize: 9.5, letterSpacing: '.06em', textDecoration: 'none',
+            color: COLORS.muted, border: `1px solid ${COLORS.border}`, borderRadius: 7,
+            padding: '4px 9px',
+          }}
+        >
+          RECENT PULLS →
+        </Link>
       </div>
     </article>
   )

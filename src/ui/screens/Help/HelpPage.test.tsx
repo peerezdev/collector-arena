@@ -42,7 +42,7 @@ describe('HelpPage', () => {
     render(<MemoryRouter><HelpPage /></MemoryRouter>)
     const texto = screen.getByText('Gimmighouls').parentElement?.textContent ?? ''
     expect(texto).toMatch(/0\.5 per dollar in battles/)
-    expect(texto).toMatch(/0\.1 per dollar in gacha/)
+    expect(texto).toMatch(/0\.01 per dollar in gacha/)
   })
 
   it('ya no se anuncia la radio, que está apagada', () => {

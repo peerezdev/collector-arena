@@ -284,6 +284,15 @@ export interface TrackerAccess {
    *  0.004 haría que el jugador apostara creyendo que ya está y siguiera fuera. */
   missing_usd: number
   window_days: number
+  /** How they have access right now: by wagering, with a bought pass, or on the house. `null`
+   *  when they have access through no route at all. `MachineTrackerPage` uses it
+   *  (`acceso?.via === 'pass'`) to paint when the pass expires next to the header's
+   *  UPDATED/STALE. */
+  via: 'wager' | 'pass' | 'house' | null
+  /** Epoch in seconds until which the bought pass is still valid, or `null` without one. */
+  pass_until: number | null
+  /** Price in USDC of each pass duration, for example `{ "7": 10, "30": 30 }`. */
+  pass_prices: Record<string, number>
 }
 
 /** Sin token también responde: quien no ha entrado recibe `allowed: false` y el aviso le explica
@@ -294,13 +303,29 @@ export function fetchTrackerAccess(token?: string | null): Promise<TrackerAccess
     : undefined)
 }
 
-export function fetchEvLive(): Promise<{ rows: EvLive[]; updated_at: number }> {
-  return gachaFetch('/gacha/ev/live')
+/** The tracker stopped being public once it was charged for, so these two calls carry a token.
+ *  A 403 (`GachaHttpError.status`) means "you have no access", NOT that something broke: the
+ *  caller must tell it apart from a network failure and show the gate, not an error notice. */
+export function fetchEvLive(token?: string | null): Promise<{ rows: EvLive[]; updated_at: number }> {
+  return gachaFetch('/gacha/ev/live', token ? { headers: { Authorization: `Bearer ${token}` } } : undefined)
 }
 
-export function fetchEvRows(hours?: number): Promise<{ rows: EvRow[]; updated_at: number }> {
+/** Keeps the existing signature as far as the `hours` parameter goes, with `token` appended at
+ *  the end: the only production caller (`MachineTrackerPage`) already sends a token, so this is
+ *  not about some case without one, it is to avoid forcing a parameter reorder on every test that
+ *  already called this function. */
+export function fetchEvRows(hours?: number, token?: string | null): Promise<{ rows: EvRow[]; updated_at: number }> {
   const q = hours ? `?hours=${hours}` : ''
-  return gachaFetch(`/gacha/ev${q}`)
+  return gachaFetch(`/gacha/ev${q}`, token ? { headers: { Authorization: `Bearer ${token}` } } : undefined)
+}
+
+/** Buys tracker access without having to wager. `days` is 7 or 30 because those are the only two
+ *  durations the backend sells (`pass_prices` carries their price). */
+export function buyTrackerPass(days: 7 | 30, token: string):
+  Promise<{ pass_until: number; days: number; price_usdc: number }> {
+  return gachaFetch('/gacha/tracker-pass', {
+    method: 'POST', headers: authHeaders(token), body: JSON.stringify({ days }),
+  })
 }
 
 /** Tiradas gratis que Collector Crypt le debe a esta wallet por sus puntos. */

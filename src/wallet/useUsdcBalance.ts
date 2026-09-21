@@ -14,6 +14,9 @@ import { config } from '../onchain/config'
 //
 // Parameterised by endpoint + response field so USDC and CARDS (and any future SPL balance we
 // expose the same way) share one polling/freeze implementation instead of two copies.
+//
+// It refreshes every 30s ONLY while the tab is on screen, and refreshes once on coming back to
+// it. The reason sits next to the code below: every query costs one RPC call.
 
 function useTokenBalance(endpoint: string, field: string, label: string): { balance: number | null; loading: boolean } {
   // Al soltar la congelación hay que repintar en cuanto se pueda: si no, el saldo real tardaría
@@ -68,12 +71,44 @@ function useTokenBalance(endpoint: string, field: string, label: string): { bala
       }
     }
 
+    // It only asks while the tab is BEING SEEN. Every query is one RPC call per connected user
+    // (the backend makes it on their behalf), so a tab left open and forgotten all night burned
+    // about 2,880 of them with nobody looking at the balance.
+    //
+    // On coming back it refreshes BEFORE resuming the cycle. Without that, the first thing
+    // someone returning would see is the number frozen hours ago, which is worse than never
+    // having stopped at all.
+    //
+    // "Visible" is not "focused": two windows side by side both count as visible, and that is
+    // right, because they are both being seen.
+    const isVisible = () => typeof document === 'undefined' || document.visibilityState !== 'hidden'
+
+    const startPolling = () => {
+      if (intervalId === null) intervalId = setInterval(fetchBalance, 30_000)
+    }
+    const stopPolling = () => {
+      if (intervalId !== null) {
+        clearInterval(intervalId)
+        intervalId = null
+      }
+    }
+    const onVisibilityChange = () => {
+      if (isVisible()) {
+        fetchBalance()
+        startPolling()
+      } else {
+        stopPolling()
+      }
+    }
+
     setLoading(true)
     fetchBalance()
-    intervalId = setInterval(fetchBalance, 30_000)
+    if (isVisible()) startPolling()
+    document.addEventListener('visibilitychange', onVisibilityChange)
 
     return () => {
-      if (intervalId !== null) clearInterval(intervalId)
+      stopPolling()
+      document.removeEventListener('visibilitychange', onVisibilityChange)
     }
   }, [identityToken, held, endpoint, field, label])
 

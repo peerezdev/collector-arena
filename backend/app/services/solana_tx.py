@@ -9,11 +9,17 @@ Scope: regular SPL Token NFTs (graded cards).
 Compressed NFTs (cNFT / Bubblegum + DAS) are out of scope and need a different path.
 """
 
+import asyncio
 import base64
+import json
+from typing import Optional
+
+import httpx
 from solders.pubkey import Pubkey
 from solders.hash import Hash
 from solders.instruction import Instruction, AccountMeta
 from solders.message import Message
+from solders.signature import Signature
 from solders.transaction import Transaction
 from solders.token.associated import get_associated_token_address
 from solders.system_program import transfer, TransferParams
@@ -244,3 +250,95 @@ def build_token_multi_transfer(
         ]))
     message = Message.new_with_blockhash(ixs, payer_pk, blockhash)
     return base64.b64encode(bytes(Transaction.new_unsigned(message))).decode()
+
+
+def leer_firma(signed_tx_b64: str) -> str:
+    """The signature (the "txid") of a transaction that is ALREADY SIGNED, read LOCALLY and
+    without touching the network.
+
+    WHY IT EXISTS. A Solana transaction's identifier IS its first signature, and that signature
+    travels INSIDE the bytes that get sent: the RPC does not invent it upon receiving it. Being
+    able to read it before sending is what lets us record in the database "I'm about to send THIS
+    transaction" BEFORE sending it, and therefore not depend on the send answering back to know
+    what to look up on an explorer if the send gets stuck halfway.
+
+    It is the first signature and no other because a Solana message's `account_keys[0]` is
+    always whoever pays the fee, and `signatures[i]` corresponds to `account_keys[i]`: slot 0 is
+    the fee payer's, which is what the RPC returns as the result of `sendTransaction`.
+
+    AN UNSIGNED TX IS NOT A SILENT ERROR. `Transaction.new_unsigned` leaves that slot at zeros,
+    and a signature of zeros serializes to a base58 `1111…` that looks like a perfectly valid
+    string. Storing it would be worse than failing: it would leave in the database a signature
+    that exists on no chain and that nobody could ever reconcile. That is why it is rejected on
+    purpose.
+    """
+    try:
+        tx = Transaction.from_bytes(base64.b64decode(signed_tx_b64))
+    except Exception as e:                       # broken base64, bytes that are not a transaction…
+        raise ValueError("could not parse the signed transaction: %s" % e)
+    firmas = tx.signatures
+    if not firmas or firmas[0] == Signature.default():
+        raise ValueError("the transaction is not signed: the fee payer slot is all zeros")
+    return str(firmas[0])
+
+
+async def confirmar_firma(rpc_url: str, firma: str, *, intentos: int = 10,
+                          espera_s: float = 1.5, timeout_s: float = 20.0) -> Optional[bool]:
+    """Whether that transaction reached the chain and came out WELL. Tri-state, not boolean.
+
+    Exists because `submit_signed_tx` only sends: it returns the signature without waiting for
+    anything. Treating a send as charged is giving away the pass every time a transaction falls
+    over after going out.
+
+    Returns three different things, and whoever calls it treats them differently:
+
+      · `True`: confirmed or finalized, no error. The money moved.
+      · `False`: DEFINITIVE REJECTION. The chain accepted it and executed it BADLY (`err`
+        present). The money did NOT move, and that is a certainty, not a suspicion.
+      · `None`: INDETERMINATE. The retries ran out without seeing either an `err` or a
+        confirmation: a network that never answered, an RPC that never saw the signature, or a
+        transaction that stayed at `processed` without settling. The money MAY have moved.
+
+    This used to return `False` for the indeterminate case too, and that was a lie: it lumped
+    "definitely not" together with "no idea" into the same value, and the caller could not treat
+    them differently (exactly the failure that left someone charged, without access, and without
+    any signature to reconcile, since nothing distinguished that case from a clean rejection).
+    Here only what is known gets reported; deciding what to do with the uncertainty is up to the
+    caller.
+
+    Two more things that look like details and are not:
+
+      · `processed` is not enough: it can be reverted. Only `confirmed` and `finalized` count;
+        everything else (including staying at `processed` until the retries run out) is
+        indeterminate.
+      · A body that is not JSON (a 200 with HTML from a downed proxy, an empty response under
+        load...) counts as the same "I still don't know": `r.json()` can raise a
+        `json.JSONDecodeError`, which is NOT a subclass of `httpx.HTTPError`, so it has to be
+        caught separately so it does not slip through.
+
+    `intentos` / `espera_s` / `timeout_s` are adjustable because the caller knows better than
+    this function how much total budget it can afford: a normal HTTP request (with no proxy that
+    can hold on for minutes) needs a much shorter total than calmly confirming a background
+    reconciliation.
+    """
+    for intento in range(intentos):
+        if intento:
+            await asyncio.sleep(espera_s)
+        try:
+            async with httpx.AsyncClient() as c:
+                r = await c.post(rpc_url, json={"jsonrpc": "2.0", "id": 1,
+                                                "method": "getSignatureStatuses",
+                                                "params": [[firma], {"searchTransactionHistory": True}]},
+                                 timeout=timeout_s)
+                r.raise_for_status()
+                d = r.json()
+        except (httpx.HTTPError, json.JSONDecodeError):
+            continue
+        valor = ((d.get("result") or {}).get("value") or [None])[0]
+        if not valor:
+            continue
+        if valor.get("err"):
+            return False            # it executed and failed: the money did NOT move
+        if valor.get("confirmationStatus") in ("confirmed", "finalized"):
+            return True
+    return None                     # retries ran out with no verdict: INDETERMINATE

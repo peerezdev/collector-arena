@@ -25,7 +25,14 @@ from app import main as main_mod
 from app.db import init_db, make_session_factory
 from app.main import create_app
 from app.services.gacha import GachaService
+from app.privy import PrivyVerifier
+from tests.conftest import make_es256, privy_auth_headers
 from tests.test_chain_mock import MockChainSource
+
+# `/gacha/ev` and `/gacha/ev/live` stopped being public once the tracker started charging: what
+# is tested here is that the event loop stays alive, not access, so the test wallet gets in
+# through the whitelist (the house's path) and the client carries its token.
+WALLET = "8QDBKx8P3pxkRhiqyXFtYcPPf2CM1F5NiE5A8yjkgtm6"
 
 TARDANZA = 0.4          # lo que "cuesta" el cálculo de una máquina en el test
 LATIDO = 0.01           # cada cuánto comprueba el vigilante que el bucle responde
@@ -40,15 +47,19 @@ def _app(monkeypatch, lento):
     async def maquinas_falsas():
         return [{"code": "pokemon_50", "name": "Elite", "price": 50, "instantBuyback": 80}]
 
+    priv = make_es256()
+    app_id = "app-test"
     app = create_app(sf, MockChainSource(),
                      gacha=GachaService(base_url="https://dev-gacha.example.com", api_key=""),
-                     solana_rpc_url="https://api.devnet.solana.com")
+                     solana_rpc_url="https://api.devnet.solana.com",
+                     privy=PrivyVerifier(app_id=app_id, key_resolver=lambda kid: priv.public_key()),
+                     tracker_access_allowlist={WALLET})
     monkeypatch.setattr(GachaService, "machines", lambda self: maquinas_falsas())
     monkeypatch.setattr(main_mod, "fila_ev", lento)
-    return app
+    return app, privy_auth_headers(priv, app_id, WALLET)
 
 
-async def _latidos_mientras(app, ruta):
+async def _latidos_mientras(app, ruta, headers):
     """Pide `ruta` y cuenta cuántas veces el bucle de eventos pudo despertarse mientras tanto."""
     latidos = 0
 
@@ -61,7 +72,7 @@ async def _latidos_mientras(app, ruta):
     tarea = asyncio.create_task(vigilante())
     transporte = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transporte, base_url="http://t") as c:
-        r = await c.get(ruta, timeout=30)
+        r = await c.get(ruta, headers=headers, timeout=30)
     tarea.cancel()
     return r, latidos
 
@@ -72,8 +83,8 @@ async def test_calcular_el_ev_no_deja_mudo_al_backend(monkeypatch):
         time.sleep(TARDANZA)          # BLOQUEANTE a propósito: es lo que hace el remuestreo real
         return {"machine": code, "realized_edge_pct": 1.0}
 
-    app = _app(monkeypatch, fila_lenta)
-    r, latidos = await _latidos_mientras(app, "/gacha/ev")
+    app, headers = _app(monkeypatch, fila_lenta)
+    r, latidos = await _latidos_mientras(app, "/gacha/ev", headers)
 
     assert r.status_code == 200
     # Sin hilo, el bucle se queda clavado los 0,4 s y no late ni una vez. Con hilo late ~40 veces;
@@ -89,11 +100,11 @@ async def test_el_carril_rapido_tampoco_bloquea(monkeypatch):
     def fila_lenta(s, code, **kw):
         return {"machine": code}
 
-    app = _app(monkeypatch, fila_lenta)
+    app, headers = _app(monkeypatch, fila_lenta)
     monkeypatch.setattr(main_mod, "rachas_por_tier",
                         lambda s, code: time.sleep(TARDANZA) or {})
     monkeypatch.setattr(main_mod.winners_store, "maquinas_con_datos", lambda s: ["pokemon_50"])
 
-    r, latidos = await _latidos_mientras(app, "/gacha/ev/live")
+    r, latidos = await _latidos_mientras(app, "/gacha/ev/live", headers)
     assert r.status_code == 200
     assert latidos >= 10, f"el carril rápido bloqueó el bucle ({latidos} latidos)"

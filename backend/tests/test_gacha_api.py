@@ -25,7 +25,7 @@ WALLET_A = "So1anaAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1"
 WALLET_B = "So1anaBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB1"
 
 
-def _client(api_key="k123", rate_limit=10, base_url=BASE):
+def _client(api_key="k123", rate_limit=10, base_url=BASE, tracker_access_allowlist=None):
     engine = create_engine("sqlite:///:memory:",
                            connect_args={"check_same_thread": False}, poolclass=StaticPool)
     init_db(engine)
@@ -34,7 +34,8 @@ def _client(api_key="k123", rate_limit=10, base_url=BASE):
     privy = PrivyVerifier(app_id=APP_ID, key_resolver=lambda kid: priv.public_key())
     gacha = GachaService(base_url=base_url, api_key=api_key)
     app = create_app(sf, MockChainSource(), elo_start=1200, elo_k=32,
-                     gacha=gacha, gacha_rate_limit=rate_limit, privy=privy)
+                     gacha=gacha, gacha_rate_limit=rate_limit, privy=privy,
+                     tracker_access_allowlist=tracker_access_allowlist)
     client = TestClient(app)
     client.session_factory = sf     # los tests que apagan máquinas necesitan la base
     return client, priv
@@ -1351,9 +1352,12 @@ def _ev_machines():
 def test_el_tracker_no_enseña_una_maquina_que_CC_tiene_cerrada():
     """Medir el EV de una máquina a la que nadie puede tirar ocupa sitio y sugiere una decisión
     que no se puede tomar."""
-    c, _ = _client()
+    # The tracker closed its doors (task 7): this test's wallet gets in through the house's
+    # whitelist, which is the path that does not require seeding a battle or a TrackerPass just
+    # to test a filter that has nothing to do with access.
+    c, priv = _client(tracker_access_allowlist={WALLET_A})
     _ev_machines()
-    codigos = [f["machine"] for f in c.get("/gacha/ev").json()["rows"]]
+    codigos = [f["machine"] for f in c.get("/gacha/ev", headers=_hdrs(priv, WALLET_A)).json()["rows"]]
     assert "viva" in codigos
     assert "cerrada" not in codigos
 
@@ -1362,9 +1366,9 @@ def test_el_tracker_no_enseña_una_maquina_que_CC_tiene_cerrada():
 def test_el_tracker_no_enseña_una_maquina_que_hemos_apagado_nosotros():
     """El mismo filtro que el catálogo: si no se ofrece para jugar, no se mide en pantalla."""
     from app.services import machine_visibility
-    c, _ = _client()
+    c, priv = _client(tracker_access_allowlist={WALLET_A})
     _ev_machines()
     with c.session_factory() as s:
         machine_visibility.hide(s, "viva", reason="prueba")
-    codigos = [f["machine"] for f in c.get("/gacha/ev").json()["rows"]]
+    codigos = [f["machine"] for f in c.get("/gacha/ev", headers=_hdrs(priv, WALLET_A)).json()["rows"]]
     assert "viva" not in codigos

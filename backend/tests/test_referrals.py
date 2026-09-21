@@ -63,13 +63,13 @@ def test_award_with_code_fallback_to_earned_when_no_owner(Session, unit_rate):
     assert get_referral_code(s, "NOOWNER").earned == 10  # round(50 * 0.20)
 
 
-def test_award_rounding(Session, unit_rate):
+def test_award_does_not_round_the_boost(Session, unit_rate):
     s = Session()
     create_referral_code(s, "ODD", "Odd", boost_pct=0.105, referrer_pct=0.0)
     apply_referral_code(s, "dave", "ODD")
-    credited = award_gimmighouls(s, "dave", 33_000_000)  # $33 · 33 * 1.105 = 36.465 -> 36
+    credited = award_gimmighouls(s, "dave", 33_000_000)  # $33 · 33 * 1.105 = 36.465, as is
     s.commit()
-    assert credited == 36
+    assert credited == pytest.approx(36.465)
 
 
 def test_award_respects_config_ratio(Session, monkeypatch):
@@ -188,16 +188,100 @@ def test_settle_award_idempotent_guard(Session, unit_rate):
 
 
 def test_ratios_de_gimmighouls_no_se_mueven_sin_tocar_la_copia():
-    """Las dos cifras están escritas A MANO en la interfaz.
+    """Both figures are written BY HAND in the interface.
 
-    src/ui/screens/Help/helpContent.ts y src/ui/components/OnboardingTutorial.tsx le prometen al
-    jugador "0.5 per dollar in battles" y "0.1 in gacha". No hay endpoint que las publique, así
-    que si estos valores cambian y la copia no, la ayuda miente sobre lo que se gana. Este test es
-    el aviso: si lo rompes, actualiza también esos dos ficheros.
+    src/ui/screens/Help/helpContent.ts and src/ui/components/OnboardingTutorial.tsx promise the
+    player "0.5 per dollar in battles" and "0.01 in gacha". No endpoint publishes them, so if these
+    values change and the copy does not, the Help text lies about what you earn. This test is the
+    warning: if you break it, update those two files too.
     """
     from app.config import Settings
     s = Settings()
     assert s.gimmighoul_per_usdc == 0.5
-    assert s.gimmighoul_per_usdc_gacha == 0.1
+    assert s.gimmighoul_per_usdc_gacha == 0.01
     # Y el gacha renta menos que una batalla: se premia jugar contra alguien.
     assert s.gimmighoul_per_usdc_gacha < s.gimmighoul_per_usdc
+
+
+# ── Fractions do not get lost ─────────────────────────────────────────────
+#
+# The counter IS DECIMAL. It used to be an integer, and with the gacha at 0.01 per dollar it
+# stopped working: a 50 $ pack gives half a point, `round(0.5)` is 0, and the two MOST played
+# machines (25 and 50 $) would have stopped paying anything at all while the help text kept
+# promising 0.01 per dollar.
+#
+# With decimals there is nothing to round, so nothing gets overpaid either: you get paid exactly
+# what is due.
+
+USDC_ = 1_000_000
+
+
+def test_half_a_unit_is_paid_in_full_not_rounded(Session):
+    with Session() as s:
+        assert award_gimmighouls(s, "W", 50 * USDC_, ratio=0.01) == 0.5
+        assert s.get(User, "W").gimmighouls == 0.5
+
+
+def test_two_50_dollar_packs_add_up_to_the_point(Session):
+    with Session() as s:
+        award_gimmighouls(s, "W", 50 * USDC_, ratio=0.01)
+        award_gimmighouls(s, "W", 50 * USDC_, ratio=0.01)
+        assert s.get(User, "W").gimmighouls == 1
+
+
+def test_ten_50_dollar_packs_pay_the_FIVE_points_owed(Session):
+    """What backs the promise: 0.01 per dollar on 500 $ is 5 points. Neither 0 nor 10."""
+    with Session() as s:
+        for _ in range(10):
+            award_gimmighouls(s, "W", 50 * USDC_, ratio=0.01)
+        assert s.get(User, "W").gimmighouls == 5
+
+
+def test_four_25_dollar_packs_pay_one_point(Session):
+    with Session() as s:
+        for _ in range(4):
+            award_gimmighouls(s, "W", 25 * USDC_, ratio=0.01)
+        assert s.get(User, "W").gimmighouls == 1
+
+
+def test_never_overpays(Session):
+    """A 150 $ pack at 0.01 is 1.5 points. Rounding to the nearest one would give away half a
+    point for free."""
+    with Session() as s:
+        assert award_gimmighouls(s, "W", 150 * USDC_, ratio=0.01) == 1.5
+        assert s.get(User, "W").gimmighouls == 1.5
+
+
+def test_battles_still_pay_the_same(Session):
+    """Where the payout was already an integer nothing changes: 10 $ at 0.5 is 5 points."""
+    with Session() as s:
+        assert award_gimmighouls(s, "W", 10 * USDC_) == 5
+        assert s.get(User, "W").gimmighouls == 5
+
+
+def test_the_referrer_cut_also_carries_decimals(Session):
+    """Its cut is a percentage of an already small payout, so it is where the most fractions
+    come out."""
+    with Session() as s:
+        create_referral_code(s, code="REF", name="R", boost_pct=0.0, referrer_pct=0.1,
+                             owner_wallet="OWNER")
+        apply_referral_code(s, "W", "REF")
+        award_gimmighouls(s, "W", 50 * USDC_, ratio=0.01)   # 0.1 of half a point = 0.05
+        assert s.get(User, "OWNER").gimmighouls == 0.05
+
+
+def test_the_decimal_survives_the_round_trip_to_disk(Session):
+    """The ones above look at the in-memory object; this one forces a round trip through the
+    database.
+
+    What this does NOT prove, in case someone reads it backwards: that the column has to be
+    declared FLOAT. SQLite types by affinity and stores 0.5 as is even if the column says
+    INTEGER (checked by mutating the model: this test passes just the same). The model's FLOAT
+    is what states the intent, and what would be needed if this were ever not SQLite. What this
+    does hold is that nothing on the round trip turns the half point into an integer.
+    """
+    with Session() as s:
+        award_gimmighouls(s, "W", 50 * USDC_, ratio=0.01)
+        s.commit()
+    with Session() as s:
+        assert s.get(User, "W").gimmighouls == 0.5
