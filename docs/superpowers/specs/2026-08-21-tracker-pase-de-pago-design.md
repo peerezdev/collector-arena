@@ -39,11 +39,24 @@ cierra también.
 |---|---|
 | Vías de acceso | wager **o** pase activo **o** lista blanca de la casa |
 | Duraciones | 7 y 30 días |
-| Precio | En configuración, decidido en el despliegue. **0 = apagado** |
+| Precio | En configuración, decidido en el despliegue. **0 = apagado**. Puesto: **6,99** (7 d) y **19,99** (30 d) |
 | Renovación | Manual. **Sin cobro automático** |
 | Comprar estando dentro | Suma al final del pase vigente, no desde hoy |
 | Devoluciones | No hay, y se dice **antes** de pagar |
 | Datos | `/gacha/ev` y `/gacha/ev/live` pasan a exigir acceso |
+
+### El precio: 6,99 y 19,99
+
+Decidido en septiembre de 2026, con la implementación ya terminada. Vive en el `.env` de la máquina,
+que no se versiona, así que queda escrito aquí para que la cifra tenga dónde consultarse.
+
+- 6,99 por 7 días salen a 0,999 al día. 19,99 por 30 días salen a 0,666. El largo es más barato por
+  día, que es la única relación que el backend comprueba al arrancar (`avisar_precios_raros`).
+- Frente a la otra puerta: apostar los 100 USDC nos deja del orden de 2 USDC en fees, así que un
+  pase de 7 días ingresa más del triple por usuario. No compiten en lo mismo. El wager mueve mesas y
+  ventas de sobres a Collector Crypt; el pase solo ingresa.
+- Qué llevó exactamente a esas dos cifras y no a otras no se escribió en su momento. Lo anterior es
+  lo que se puede afirmar mirando los números.
 
 ### Por qué sin cobro automático
 
