@@ -6,6 +6,7 @@ import { useChat, type ChatLine } from '../../../hooks/useChat'
 import { useDrops } from '../../drops/useDrops'
 import { useProfile } from '../../../hooks/useProfile'
 import { useEmbeddedSolanaAddress } from '../../../wallet/embedded'
+import { NombreUsuario } from '../../badges/NombreUsuario'
 
 /**
  * El nombre de quien habla, enlazado a su perfil, con la acción de propina al lado.
@@ -20,14 +21,19 @@ import { useEmbeddedSolanaAddress } from '../../../wallet/embedded'
  * Aquí NO se ofrece dar propina. Hubo un botón TIP al lado de cada nombre y se quitó: repetido en
  * cada mensaje era ruido constante, y la lista de nombres es justo donde menos sitio sobra. La
  * forma de dar propina desde el chat es el comando `/tip`, que llega al mismo modal.
+ *
+ * The rank emblem and tags come from `NombreUsuario`; messages without a wallet have neither,
+ * since they belong to nobody.
  */
 function Autor({ msg, style }: { msg: ChatLine; style: React.CSSProperties }) {
   if (!msg.wallet) return <span style={style}>{msg.user}</span>
   return (
-    <Link to={`/profile/${encodeURIComponent(msg.wallet)}`} title={`View ${msg.user}'s profile`}
-      style={{ ...style, textDecoration: 'none' }}>
-      {msg.user}
-    </Link>
+    <NombreUsuario wallet={msg.wallet} size={15}>
+      <Link to={`/profile/${encodeURIComponent(msg.wallet)}`} title={`View ${msg.user}'s profile`}
+        style={{ ...style, textDecoration: 'none' }}>
+        {msg.user}
+      </Link>
+    </NombreUsuario>
   )
 }
 import { useReducedMotion } from '../../useReducedMotion'
