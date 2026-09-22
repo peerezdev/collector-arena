@@ -30,12 +30,12 @@ function notify() {
 }
 
 async function fetchBatch(wallets: string[]) {
+  const at = Date.now()
   try {
     const url = `${config.backendUrl}/users/badges?wallets=${encodeURIComponent(wallets.join(','))}`
     const r = await fetch(url, { headers: { 'ngrok-skip-browser-warning': 'true' } })
     if (!r.ok) return
     const body = (await r.json()) as Record<string, { rank?: unknown; tags?: unknown }>
-    const at = Date.now()
     for (const w of wallets) {
       const d = body[w]
       if (!d) continue
@@ -48,9 +48,15 @@ async function fetchBatch(wallets: string[]) {
       })
     }
   } catch {
-    // Nothing cached: the names render without emblems, and the next mount asks again.
+    // Nothing new cached: unknown names render without emblems, and the next mount asks again.
   } finally {
-    for (const w of wallets) inFlight.delete(w)
+    // Any entry this batch did not replace (failure, non-OK, missing from the body) keeps its old
+    // badges but counts as fresh again, so mounted hooks do not re-request it in a loop.
+    for (const w of wallets) {
+      inFlight.delete(w)
+      const e = cache.get(w)
+      if (e && e.at < at) e.at = at
+    }
     notify()
   }
 }
@@ -76,8 +82,9 @@ function enqueue(wallets: string[]) {
 function read(wallets: string[]): Record<string, Badges> {
   const out: Record<string, Badges> = {}
   for (const w of wallets) {
-    const b = fresh(w)
-    if (b) out[w] = b
+    // Stale-while-revalidate: an old entry is still shown until its refresh lands.
+    const e = cache.get(w)
+    if (e) out[w] = e.badges
   }
   return out
 }
@@ -91,10 +98,15 @@ export function useBadges(wallets: string[]): Record<string, Badges> {
   const [view, setView] = useState(() => read(wallets))
 
   useEffect(() => {
-    const refresh = () => setView(read(wallets))
+    const refresh = () => {
+      // Mounted hooks never remount (chat rows), so re-request their stale entries here. Wallets
+      // with no entry are left alone: a failed fetch also notifies, and retrying them would loop.
+      enqueue(wallets.filter((w) => cache.has(w)))
+      setView(read(wallets))
+    }
     listeners.add(refresh)
     enqueue(wallets)
-    refresh()
+    setView(read(wallets))
     return () => { listeners.delete(refresh) }
     // `key` captures the wallet list; the array identity changes every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
