@@ -4,6 +4,7 @@ from typing import Optional
 from sqlalchemy import select, desc, func
 from sqlalchemy.orm import Session
 from ..models import User, RatingHistory
+from .badges import entry_base_units as _entry_base_units
 
 
 class AliasTakenError(Exception):
@@ -100,15 +101,6 @@ def history(session: Session, wallet: str) -> list[RatingHistory]:
     return list(session.scalars(
         select(RatingHistory).where(RatingHistory.wallet == wallet).order_by(desc(RatingHistory.ts))
     ))
-
-
-def _entry_base_units(b) -> int:
-    """USDC (base units) each player wagered in a battle: the pack price for a pack battle, but the
-    full buy-in for a royale (b.price is only the per-box price there, not what the player paid)."""
-    if b.mode == "royale":
-        from .royale_funding import royale_buyin  # lazy: keep solana deps out of module import
-        return royale_buyin(b.max_players, b.price)
-    return b.price
 
 
 def read_user_stats(session: Session, wallet: str) -> dict:
