@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useEmbeddedSolanaAddress } from '../wallet/embedded'
 import { config } from '../onchain/config'
 import { isRankId, type RankId } from '../ui/badges/ranks'
@@ -24,11 +24,19 @@ export function useProfile(addressOverride?: string | null): ProfileData & { loa
   const [loading, setLoading] = useState(false)
   const [nonce, setNonce] = useState(0)
   const refresh = useCallback(() => setNonce((n) => n + 1), [])
+  const shownFor = useRef<string | null>(null)
 
   useEffect(() => {
     if (!address) {
+      shownFor.current = null
       setData(EMPTY)
       return
+    }
+    // A different wallet must not show the previous one's rank and tags while it loads (or if it
+    // fails). A refresh of the same wallet keeps what is on screen.
+    if (shownFor.current !== address) {
+      shownFor.current = address
+      setData(EMPTY)
     }
     let cancelled = false
     setLoading(true)
