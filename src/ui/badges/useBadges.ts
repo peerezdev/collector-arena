@@ -10,26 +10,26 @@ export interface Badges {
 /** A rank or tag change shows up within this long without a reload. */
 const TTL_MS = 5 * 60_000
 /** The backend's limit per request (GET /users/badges answers 422 above it). */
-const LOTE = 100
+const BATCH_SIZE = 100
 /** How long the queue waits to gather the wallets of every component rendering at once. */
-const ESPERA_MS = 20
+const GATHER_MS = 20
 
 const cache = new Map<string, { badges: Badges; at: number }>()
-const cola = new Set<string>()
-const enVuelo = new Set<string>()
-const oyentes = new Set<() => void>()
-let temporizador: ReturnType<typeof setTimeout> | null = null
+const queue = new Set<string>()
+const inFlight = new Set<string>()
+const listeners = new Set<() => void>()
+let timer: ReturnType<typeof setTimeout> | null = null
 
-function fresco(w: string): Badges | undefined {
+function fresh(w: string): Badges | undefined {
   const e = cache.get(w)
   return e && Date.now() - e.at <= TTL_MS ? e.badges : undefined
 }
 
-function avisar() {
-  for (const o of oyentes) o()
+function notify() {
+  for (const l of listeners) l()
 }
 
-async function pedirLote(wallets: string[]) {
+async function fetchBatch(wallets: string[]) {
   try {
     const url = `${config.backendUrl}/users/badges?wallets=${encodeURIComponent(wallets.join(','))}`
     const r = await fetch(url, { headers: { 'ngrok-skip-browser-warning': 'true' } })
@@ -50,33 +50,33 @@ async function pedirLote(wallets: string[]) {
   } catch {
     // Nothing cached: the names render without emblems, and the next mount asks again.
   } finally {
-    for (const w of wallets) enVuelo.delete(w)
-    avisar()
+    for (const w of wallets) inFlight.delete(w)
+    notify()
   }
 }
 
-function vaciarCola() {
-  temporizador = null
-  const wallets = [...cola]
-  cola.clear()
-  for (let i = 0; i < wallets.length; i += LOTE) void pedirLote(wallets.slice(i, i + LOTE))
+function flushQueue() {
+  timer = null
+  const wallets = [...queue]
+  queue.clear()
+  for (let i = 0; i < wallets.length; i += BATCH_SIZE) void fetchBatch(wallets.slice(i, i + BATCH_SIZE))
 }
 
-function encolar(wallets: string[]) {
-  let alguna = false
+function enqueue(wallets: string[]) {
+  let queued = false
   for (const w of wallets) {
-    if (fresco(w) || enVuelo.has(w)) continue
-    enVuelo.add(w)
-    cola.add(w)
-    alguna = true
+    if (fresh(w) || inFlight.has(w)) continue
+    inFlight.add(w)
+    queue.add(w)
+    queued = true
   }
-  if (alguna && !temporizador) temporizador = setTimeout(vaciarCola, ESPERA_MS)
+  if (queued && !timer) timer = setTimeout(flushQueue, GATHER_MS)
 }
 
-function leer(wallets: string[]): Record<string, Badges> {
+function read(wallets: string[]): Record<string, Badges> {
   const out: Record<string, Badges> = {}
   for (const w of wallets) {
-    const b = fresco(w)
+    const b = fresh(w)
     if (b) out[w] = b
   }
   return out
@@ -88,25 +88,25 @@ function leer(wallets: string[]): Record<string, Badges> {
  */
 export function useBadges(wallets: string[]): Record<string, Badges> {
   const key = wallets.join(',')
-  const [vista, setVista] = useState(() => leer(wallets))
+  const [view, setView] = useState(() => read(wallets))
 
   useEffect(() => {
-    const refrescar = () => setVista(leer(wallets))
-    oyentes.add(refrescar)
-    encolar(wallets)
-    refrescar()
-    return () => { oyentes.delete(refrescar) }
+    const refresh = () => setView(read(wallets))
+    listeners.add(refresh)
+    enqueue(wallets)
+    refresh()
+    return () => { listeners.delete(refresh) }
     // `key` captures the wallet list; the array identity changes every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key])
 
-  return vista
+  return view
 }
 
 export function __resetBadgesForTests() {
   cache.clear()
-  cola.clear()
-  enVuelo.clear()
-  if (temporizador) clearTimeout(temporizador)
-  temporizador = null
+  queue.clear()
+  inFlight.clear()
+  if (timer) clearTimeout(timer)
+  timer = null
 }
