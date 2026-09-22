@@ -10,6 +10,9 @@ import { HistoryTab } from './HistoryTab'
 import { SettingsTab } from './SettingsTab'
 import { TipModal } from '../../components/TipModal'
 import { TIPS_ENABLED } from '../../../featureFlags'
+import { EmblemaRango } from '../../badges/EmblemaRango'
+import { TagUsuario } from '../../badges/TagUsuario'
+import { RankProgress } from './RankProgress'
 
 type Tab = 'overview' | 'inventory' | 'history' | 'settings'
 
@@ -33,7 +36,7 @@ export function ProfilePage() {
   const target = isSelf ? undefined : wallet
   const address = target ?? own
 
-  const { username } = useProfile(target)
+  const { username, rank, tags, rankProgress } = useProfile(target)
   const { stats } = useUserStats(target)
 
   const tabs: { key: Tab; label: string }[] = isSelf
@@ -72,6 +75,8 @@ export function ProfilePage() {
             <div style={{ fontFamily: FONTS.mono, fontSize: 11, letterSpacing: '.22em', color: COLORS.violet, marginBottom: 8 }}>COLLECTOR ARENA · PROFILE</div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
               <h1 style={{ margin: 0, fontFamily: FONTS.display, fontSize: 'clamp(26px,3.4vw,38px)', fontWeight: 800, letterSpacing: '-.02em' }}>{handle}</h1>
+              <EmblemaRango rank={rank} size={28} />
+              {(tags ?? []).map((t) => <TagUsuario key={t} tag={t} />)}
               {isSelf && (
                 <button onClick={() => setTab('settings')} title="Edit profile"
                   style={{ width: 30, height: 30, borderRadius: 9, border: `1px solid ${COLORS.border}`, background: '#ffffff08', color: COLORS.muted, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -85,6 +90,7 @@ export function ProfilePage() {
                 </button>
               )}
             </div>
+            <RankProgress rank={rank} progress={rankProgress} />
             <div style={{ display: 'flex', gap: 26, flexWrap: 'wrap' }}>
               <HeroStat label="BATTLES" value={stats?.battles ?? 0} />
               <HeroStat label="WINS" value={stats?.wins ?? 0} />
