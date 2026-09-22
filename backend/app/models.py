@@ -100,6 +100,18 @@ class AppFlag(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
+class UserTag(Base):
+    """A hand-assigned label shown next to a player's name (e.g. TEAM for the house's accounts).
+
+    No foreign key to `users`: a house wallet can be tagged before it ever logs in.
+    Managed with `scripts/tags.py`.
+    """
+    __tablename__ = "user_tags"
+    wallet: Mapped[str] = mapped_column(String, primary_key=True)
+    tag: Mapped[str] = mapped_column(String, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
 class HiddenMachine(Base):
     """Máquina de gacha que NO se ofrece, aunque Collector Crypt la sirva.
 

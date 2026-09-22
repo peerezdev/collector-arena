@@ -17,7 +17,7 @@ interface CapturedTipModalProps {
 // the useEmbeddedSolanaAddress mock below, so tip tests can set "who am I" per test.
 // `tipModalCalls` records every prop set ChatDock hands to <TipModal>, so wiring tests can
 // assert on WHO the modal was opened for, not just that a tip button exists somewhere.
-const { chatState, tipModalCalls, toasts, flags, busqueda } = vi.hoisted(() => ({
+const { chatState, tipModalCalls, toasts, flags, busqueda, badges } = vi.hoisted(() => ({
   chatState: { messages: [] as any[], ownWallet: null as string | null,
                canPost: false, onlineUsers: [] as { wallet: string; name: string }[],
                send: vi.fn() as ReturnType<typeof vi.fn> },
@@ -27,7 +27,9 @@ const { chatState, tipModalCalls, toasts, flags, busqueda } = vi.hoisted(() => (
   busqueda: { resultados: [] as { wallet: string; alias: string | null; online: boolean }[],
               cargando: false,
               llamadas: [] as { consulta: string; activo: boolean }[] },
+  badges: {} as Record<string, { rank: string | null; tags: string[] }>,
 }))
+vi.mock('../../badges/useBadges', () => ({ useBadges: () => badges }))
 // Igual que en el perfil: aquí se prueba la pantalla con las propinas encendidas. Es un GETTER y
 // no un valor fijo porque `/tip` es hoy el único comando: los dos tests de "propinas apagadas"
 // necesitan verlo en false, y `vi.mock` se iza una sola vez por fichero.
@@ -253,6 +255,26 @@ describe('ChatDock · perfiles clicables', () => {
     chatState.messages = [{ user: 'X', wallet: 'a/b?c', text: 'hola', ts: 1 }]
     renderDock()
     expect(screen.getByRole('link', { name: 'X' }).getAttribute('href')).toBe('/profile/a%2Fb%3Fc')
+  })
+})
+
+describe('ChatDock rank emblems and tags', () => {
+  beforeEach(() => { for (const k of Object.keys(badges)) delete badges[k] })
+
+  it('shows the emblem and tags of a ranked, tagged author, and keeps the link name', () => {
+    badges['So1anaAAA111'] = { rank: 'gold', tags: ['TEAM'] }
+    chatState.messages = [{ user: 'kairo', wallet: 'So1anaAAA111', text: 'hi', ts: 1 }]
+    renderDock()
+    expect(screen.getByRole('img', { name: 'Gold' })).toBeTruthy()
+    expect(screen.getByText('TEAM')).toBeTruthy()
+    expect(screen.getByRole('link', { name: 'kairo' }).getAttribute('href')).toBe('/profile/So1anaAAA111')
+  })
+
+  it('shows neither on a message without a wallet', () => {
+    chatState.messages = [{ user: 'House', text: 'hello', ts: 1 }]
+    renderDock()
+    expect(screen.queryByRole('img', { name: /bronze|silver|gold|platinum|diamond|obsidian/i })).toBeNull()
+    expect(screen.queryByText('TEAM')).toBeNull()
   })
 })
 
