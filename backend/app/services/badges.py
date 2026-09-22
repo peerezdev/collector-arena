@@ -66,3 +66,22 @@ def wagered_by_wallet(session: Session, wallets: list[str]) -> dict[str, float]:
     for wallet, battle in rows:
         totals[wallet] += entry_base_units(battle)
     return {w: units / USDC for w, units in totals.items()}
+
+
+def badges_for(session: Session, wallets: list[str]) -> dict[str, dict]:
+    """Rank and tags for each wallet. Two queries whatever the number of wallets."""
+    from .user_tags import tags_by_wallet
+    wagers = wagered_by_wallet(session, wallets)
+    tags = tags_by_wallet(session, wallets)
+    return {w: {"rank": rank_for(wagers[w]), "tags": tags[w]} for w in wallets}
+
+
+def profile_badges(session: Session, wallet: str) -> dict:
+    """What the profile page shows: rank, tags and the progress towards the next rank."""
+    from .user_tags import tags_by_wallet
+    progress = progress_for(wagered_by_wallet(session, [wallet])[wallet])
+    return {"rank": progress["rank"],
+            "tags": tags_by_wallet(session, [wallet])[wallet],
+            "rank_progress": {"wagered_usd": progress["wagered_usd"],
+                              "next_rank": progress["next_rank"],
+                              "next_threshold_usd": progress["next_threshold_usd"]}}

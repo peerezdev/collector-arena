@@ -31,6 +31,7 @@ from .services.users import (
     set_withdraw_address, leaderboard, history, AliasTakenError, buscar_usuarios,
 )
 from .services.matches import register_match, list_open, sync_match, MatchError
+from .services.badges import badges_for, profile_badges
 from .services.referrals import apply_referral_code, ReferralError
 from .elo import gap_label
 from .services.gacha import GachaService, GachaDisabled, GachaUpstreamError, tiradas_gratis
@@ -455,9 +456,21 @@ def create_app(session_factory, chain: ChainSource,
 
         return de_conectados + resto
 
+    # MUST stay above /users/{wallet}: FastAPI matches routes in order, and "badges" is a valid
+    # path segment for {wallet}. Plain `def`, not `async def`: the queries are synchronous, and an
+    # async handler would run them on the event loop and stall every other request meanwhile.
+    @app.get("/users/badges")
+    def get_badges(wallets: str = "", s: Session = Depends(db)):
+        pedidas = list(dict.fromkeys(w.strip() for w in wallets.split(",") if w.strip()))
+        if len(pedidas) > 100:
+            raise HTTPException(422, "too_many_wallets")
+        return badges_for(s, pedidas)
+
     @app.get("/users/{wallet}")
-    async def get_user(wallet: str, s: Session = Depends(db)):
-        return read_user_view(s, wallet, elo_start)
+    def get_user(wallet: str, s: Session = Depends(db)):
+        # Rank and tags only here, NOT inside read_user_view: that one runs in hot loops (battle
+        # settlement, chat announcements) that only need the alias.
+        return {**read_user_view(s, wallet, elo_start), **profile_badges(s, wallet)}
 
     @app.get("/users/{wallet}/stats")
     async def get_user_stats(wallet: str, s: Session = Depends(db)):
