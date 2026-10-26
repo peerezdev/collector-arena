@@ -16,6 +16,11 @@ class GachaDisabled(Exception):
     """Gacha deshabilitado: no hay gacha_base_url configurado (kill-switch)."""
 
 
+#: Sent on every call to Collector Crypt: their Cloudflare rejects non-browser agents.
+_USER_AGENT = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+               "Chrome/128.0.0.0 Safari/537.36")
+
+
 class GachaUpstreamError(Exception):
     """La API del Gacha falló (4xx/5xx/timeout/JSON inválido)."""
 
@@ -93,7 +98,15 @@ class GachaService:
                        params: Optional[dict] = None) -> Any:
         self._check_enabled()
         url = f"{self._base}{path}"
-        headers = {"accept": "application/json"}
+        # A BROWSER User-Agent, and it is not cosmetic. Collector Crypt sits behind Cloudflare,
+        # which answers 403 to httpx's default agent. Measured on 2026-10-19: the same request with
+        # `python-httpx/0.27.0` gets 403 and with a Chrome agent gets 200 — with or without the API
+        # key, so it is the agent that is judged, not the credentials.
+        #
+        # It broke production at 11:39 that day: 1,427 failures in 24 h, the machine catalogue
+        # unreachable and the gacha dark for players. We had already documented this same stumble
+        # twice (privy_signer._wallet and the CC sign-in), but this client never carried it.
+        headers = {"accept": "application/json", "user-agent": _USER_AGENT}
         if self._key:
             headers["x-api-key"] = self._key
         async with httpx.AsyncClient(timeout=self._timeout) as client:
