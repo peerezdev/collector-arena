@@ -4,6 +4,7 @@ import { COLORS, FONTS, GRADIENT } from '../../theme'
 import { useProfile } from '../../../hooks/useProfile'
 import { validateUsername } from '../../../profile/username'
 import { config } from '../../../onchain/config'
+import { ExportKeyPanel } from './ExportKeyPanel'
 
 const SOL_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/
 
@@ -102,6 +103,9 @@ export function SettingsTab() {
         </div>
         <div style={{ fontSize: 12, marginTop: 8, minHeight: 16, color: addrStatus.kind === 'error' ? COLORS.red : COLORS.green }}>{addrStatus.msg ?? ''}</div>
       </section>
+
+      {/* private key export — Privy renders the key on its own domain, we only open the dialog */}
+      <ExportKeyPanel />
     </div>
   )
 }
